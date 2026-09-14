@@ -53,19 +53,36 @@ alter table public.fm_faces enable row level security;
 alter table public.fm_orders enable row level security;
 alter table public.fm_settings enable row level security;
 
--- Public customer access is limited to live events and preview metadata.
+drop policy if exists "fm_live_events_read" on public.fm_events;
 create policy "fm_live_events_read" on public.fm_events for select using (status = 'live');
+
+drop policy if exists "fm_live_photos_read" on public.fm_photos;
 create policy "fm_live_photos_read" on public.fm_photos for select using (
   exists (select 1 from public.fm_events e where e.id = event_id and e.status = 'live')
 );
 
--- Embeddings are not exposed through a public select policy. Matching should happen server-side.
-
--- Customers can submit orders without authenticating, but cannot read other orders.
+drop policy if exists "fm_orders_insert" on public.fm_orders;
 create policy "fm_orders_insert" on public.fm_orders for insert with check (true);
 
--- Private storage buckets. Create these buckets in Supabase Storage:
--- fm-originals (private) and fm-previews (private or signed-preview workflow).
+create or replace function public.fm_refresh_event_photo_count(p_event_id uuid)
+returns void language sql security definer set search_path = public as $$
+  update public.fm_events
+  set photos_count = (select count(*) from public.fm_photos where event_id = p_event_id)
+  where id = p_event_id;
+$$;
+
+-- Storage: originals are private; previews are publicly readable but never contain originals.
+insert into storage.buckets (id, name, public)
+values ('fm-originals', 'fm-originals', false), ('fm-previews', 'fm-previews', true)
+on conflict (id) do nothing;
+
+-- The server upload route uses the service role, so no anonymous upload policy is needed.
+drop policy if exists "fm_preview_public_read" on storage.objects;
+create policy "fm_preview_public_read" on storage.objects
+  for select using (bucket_id = 'fm-previews');
+
+drop policy if exists "fm_originals_no_public_read" on storage.objects;
+-- Intentionally no public SELECT policy for fm-originals.
 
 insert into public.fm_settings(key, value)
 values
@@ -73,6 +90,6 @@ values
   ('group_price', '30')
 on conflict (key) do nothing;
 
-insert into public.fm_events(slug, name, event_date, status)
-values ('sam-college-2026', 'SAM College · 14 September 2026', '2026-09-14', 'live')
-on conflict (slug) do nothing;
+insert into public.fm_events(slug, name, event_date, status, upi_id)
+values ('sam-college-2026', 'SAM College · 14 September 2026', '2026-09-14', 'live', '9200010123@ybl')
+on conflict (slug) do update set upi_id = excluded.upi_id;
