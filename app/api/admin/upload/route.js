@@ -14,7 +14,6 @@ function adminOk(request) {
 export async function POST(request) {
   try {
     if (!adminOk(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!url || !serviceKey) return NextResponse.json({ error: 'Server Supabase variables are missing.' }, { status: 500 });
@@ -25,11 +24,7 @@ export async function POST(request) {
     const files = form.getAll('photos').filter((f) => f && typeof f.arrayBuffer === 'function');
     if (!files.length) return NextResponse.json({ error: 'No photos received.' }, { status: 400 });
 
-    const { data: event, error: eventError } = await supabase
-      .from('fm_events')
-      .select('id,slug')
-      .eq('slug', eventSlug)
-      .single();
+    const { data: event, error: eventError } = await supabase.from('fm_events').select('id,slug').eq('slug', eventSlug).single();
     if (eventError || !event) return NextResponse.json({ error: 'Event not found. Run the Supabase migration first.' }, { status: 400 });
 
     const results = [];
@@ -39,22 +34,12 @@ export async function POST(request) {
       const originalPath = `${idBase}-${safeName}`;
       const previewPath = `${idBase}-preview.jpg`;
       const bytes = Buffer.from(await file.arrayBuffer());
-      const preview = await sharp(bytes)
-        .rotate()
-        .resize({ width: 1600, withoutEnlargement: true })
-        .blur(8)
-        .jpeg({ quality: 78, mozjpeg: true })
-        .toBuffer();
+      // Downscale for matching/preview only. The original remains in a private bucket.
+      const preview = await sharp(bytes).rotate().resize({ width: 1000, withoutEnlargement: true }).jpeg({ quality: 72, mozjpeg: true }).toBuffer();
 
-      const up = await supabase.storage.from('fm-originals').upload(originalPath, bytes, {
-        contentType: file.type || 'image/jpeg',
-        upsert: false,
-      });
+      const up = await supabase.storage.from('fm-originals').upload(originalPath, bytes, { contentType: file.type || 'image/jpeg', upsert: false });
       if (up.error) throw up.error;
-      const pp = await supabase.storage.from('fm-previews').upload(previewPath, preview, {
-        contentType: 'image/jpeg',
-        upsert: false,
-      });
+      const pp = await supabase.storage.from('fm-previews').upload(previewPath, preview, { contentType: 'image/jpeg', upsert: false });
       if (pp.error) throw pp.error;
 
       const { data: row, error: rowError } = await supabase.from('fm_photos').insert({
@@ -65,7 +50,8 @@ export async function POST(request) {
         processing_status: 'ready',
       }).select('id,original_filename,preview_path,price,people_count,processing_status').single();
       if (rowError) throw rowError;
-      results.push(row);
+      const { data: publicData } = supabase.storage.from('fm-previews').getPublicUrl(previewPath);
+      results.push({ ...row, preview_url: publicData.publicUrl });
     }
 
     await supabase.rpc('fm_refresh_event_photo_count', { p_event_id: event.id }).catch(() => null);
