@@ -1,0 +1,76 @@
+name: Finalize Razorpay frontend
+
+on:
+  push:
+    paths:
+      - '.github/workflows/finalize-razorpay-frontend.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch frontend and dependency
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, re
+
+          pkg_path = Path('package.json')
+          pkg = json.loads(pkg_path.read_text())
+          pkg.setdefault('dependencies', {})['razorpay'] = 'latest'
+          pkg_path.write_text(json.dumps(pkg, ensure_ascii=False, separators=(',', ':')) + '\n')
+
+          page_path = Path('app/page.js')
+          text = page_path.read_text()
+
+          text = text.replace("import { QRCodeSVG } from 'qrcode.react';\n", '')
+          text = text.replace(', ExternalLink,', ',')
+          text = text.replace("const UPI_ID = '9200010123@ybl';\n", '')
+          text = text.replace("  const [utr, setUtr] = useState('');\n", '')
+          text = text.replace("  const [paymentSent, setPaymentSent] = useState(false);\n", "  const [paymentSent, setPaymentSent] = useState(false);\n  const [paymentLoading, setPaymentLoading] = useState(false);\n", 1)
+
+          new_payment = '''  const submitPayment = async () => {\n    if (!selected.length || paymentLoading) return;\n    setPaymentLoading(true);\n    setPaymentOpen(false);\n    setMatchMessage('Opening secure Razorpay checkout…');\n\n    try {\n      const scriptLoaded = await loadRazorpayScript();\n      if (!scriptLoaded || !window.Razorpay) throw new Error('Razorpay checkout could not be loaded.');\n\n      const createRes = await fetch('/api/create-order', {\n        method: 'POST',\n        headers: { 'Content-Type': 'application/json' },\n        body: JSON.stringify({ eventSlug: EVENT_SLUG, selectedPhotoIds: selected }),\n      });\n      const createBody = await createRes.json();\n      if (!createRes.ok) throw new Error(createBody.error || 'Could not create payment order.');\n\n      const options = {\n        key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,\n        amount: createBody.amount,\n        currency: createBody.currency,\n        name: 'SMF Studios',\n        description: `${selected.length} event photo${selected.length === 1 ? '' : 's'}`,\n        order_id: createBody.order_id,\n        handler: async (response) => {\n          try {\n            setMatchMessage('Verifying payment securely…');\n            const verifyRes = await fetch('/api/verify-payment', {\n              method: 'POST',\n              headers: { 'Content-Type': 'application/json' },\n              body: JSON.stringify({\n                eventSlug: EVENT_SLUG,\n                selectedPhotoIds: selected,\n                razorpay_payment_id: response.razorpay_payment_id,\n                razorpay_order_id: response.razorpay_order_id,\n                razorpay_signature: response.razorpay_signature,\n              }),\n            });\n            const verifyBody = await verifyRes.json();\n            if (!verifyRes.ok || !verifyBody.ok) throw new Error(verifyBody.error || 'Payment verification failed.');\n            const approvedId = verifyBody.order?.id;\n            setOrderId(approvedId || '');\n            setPaymentSent(true);\n            setMatchMessage('Payment verified. Starting your original downloads…');\n            setPaymentLoading(false);\n            if (approvedId) await downloadApprovedPhotos(approvedId);\n          } catch (error) {\n            setPaymentLoading(false);\n            setMatchMessage(error?.message || 'Payment verification failed.');\n          }\n        },\n        modal: {\n          backdropclose: false,\n          ondismiss: () => {\n            setPaymentLoading(false);\n            setMatchMessage('Payment cancelled.');\n          },\n        },\n        notes: { event: EVENT_SLUG },\n        theme: { color: '#111111' },\n      };\n\n      const rzp = new window.Razorpay(options);\n      rzp.on('payment.failed', (response) => {\n        setPaymentLoading(false);\n        setMatchMessage(response?.error?.description || 'Payment failed. Please try again.');\n      });\n      rzp.open();\n    } catch (error) {\n      setPaymentLoading(false);\n      setMatchMessage(error?.message || 'Could not start Razorpay checkout.');\n    }\n  };\n\n'''
+          text, count = re.subn(r"  const submitPayment = async \(\) => \{.*?^  const displayPhotos =", new_payment + "  const displayPhotos =", text, count=1, flags=re.S|re.M)
+          if count != 1:
+              raise SystemExit('payment block not found')
+
+          text = text.replace(
+              "{paymentSent && <div className=\"notice successNotice\"><CheckCircle2 size={17}/> Payment submitted. UTR recorded. Originals will start downloading automatically after admin approval.{orderId && <> Order: <code>{orderId}</code></>}</div>}",
+              "{paymentSent && <div className=\"notice successNotice\"><CheckCircle2 size={17}/> Payment verified successfully. Your original downloads are starting now.{orderId && <> Order: <code>{orderId}</code></>}</div>}"
+          )
+          text = text.replace(
+              '<button className="primaryButton" onClick={() => setPaymentOpen(true)}>Pay via UPI <ArrowRight size={17}/></button>',
+              '<button className="primaryButton" onClick={() => setPaymentOpen(true)} disabled={paymentLoading}>{paymentLoading ? <><Loader2 size={17} className="spin"/> Processing…</> : <>Pay securely <ArrowRight size={17}/></>}</button>'
+          )
+          text = text.replace(
+              "{paymentOpen && <PaymentModal amount={total} utr={utr} setUtr={setUtr} onClose={() => setPaymentOpen(false)} onSubmit={submitPayment}/>}<footer",
+              "{paymentOpen && <PaymentModal amount={total} onClose={() => setPaymentOpen(false)} onSubmit={submitPayment}/>}<footer"
+          )
+
+          new_modal = '''function PaymentModal({ amount, onClose, onSubmit }) {\n  return <div className="modalBackdrop"><div className="paymentModal"><button className="closeButton" onClick={onClose}><X size={19}/></button><div className="modalEyebrow"><IndianRupee size={15}/> SECURE CHECKOUT</div><h2>Pay ₹{amount}</h2><p>Continue to Razorpay for UPI, cards and other supported payment methods. Payment is verified securely on our server before originals are unlocked.</p><div className="checkoutPreview"><ShieldCheck size={18}/><div><b>Automatic verification</b><span>No UTR or manual payment proof required.</span></div></div><button className="primaryButton wide" onClick={onSubmit}>Continue to Razorpay <ArrowRight size={17}/></button><div className="modalFoot"><ShieldCheck size={14}/> Full-resolution originals unlock only after successful payment verification.</div></div></div>;\n}\n\n'''
+          text, count = re.subn(r"function PaymentModal\(\{.*?^function AdminView", new_modal + "function AdminView", text, count=1, flags=re.S|re.M)
+          if count != 1:
+              raise SystemExit('modal block not found')
+
+          loader = '''function loadRazorpayScript() {\n  return new Promise((resolve) => {\n    if (typeof window !== 'undefined' && window.Razorpay) return resolve(true);\n    const existing = document.querySelector('script[src="https://checkout.razorpay.com/v1/checkout.js"]');\n    if (existing) {\n      existing.addEventListener('load', () => resolve(true), { once: true });\n      existing.addEventListener('error', () => resolve(false), { once: true });\n      return;\n    }\n    const script = document.createElement('script');\n    script.src = 'https://checkout.razorpay.com/v1/checkout.js';\n    script.async = true;\n    script.onload = () => resolve(true);\n    script.onerror = () => resolve(false);\n    document.body.appendChild(script);\n  });\n}\n\n'''
+          text = text.replace('async function loadImage(src, crossOrigin = false) {', loader + 'async function loadImage(src, crossOrigin = false) {', 1)
+          text = text.replace('Full-resolution originals remain private until payment approval.', 'Full-resolution originals remain private until payment verification.')
+          text = text.replace('originals unlock after approval.', 'originals unlock after secure payment verification.')
+          page_path.write_text(text)
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/page.js package.json
+          if git diff --cached --quiet; then
+            echo 'No changes needed.'
+            exit 0
+          fi
+          git commit -m 'Complete Razorpay Standard Checkout frontend'
+          git push
