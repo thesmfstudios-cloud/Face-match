@@ -30,7 +30,7 @@ jobs:
           text = text.replace("import { QRCodeSVG } from 'qrcode.react';\n", '')
           text = text.replace(', ExternalLink,', ',')
           text = text.replace("const UPI_ID = '9200010123@ybl';\n", '')
-          text = text.replace("  const [utr, setUtr] = useState('');\n", '')
+          text = re.sub(r"\n  const \[utr, setUtr\] = useState\(''\);", '', text)
           text = re.sub(r"\n  const \[paymentLoading, setPaymentLoading\] = useState\(false\);", '', text)
           text = text.replace("  const [paymentSent, setPaymentSent] = useState(false);\n", "  const [paymentSent, setPaymentSent] = useState(false);\n  const [paymentLoading, setPaymentLoading] = useState(false);\n", 1)
 
@@ -45,6 +45,42 @@ jobs:
           text = re.sub(r"function PaymentModal\(\{.*?^function AdminView", new_modal + "function AdminView", text, count=1, flags=re.S|re.M)
 
           loader = '''function loadRazorpayScript() {\n  return new Promise((resolve) => {\n    if (typeof window !== 'undefined' && window.Razorpay) return resolve(true);\n    const existing = document.querySelector('script[src="https://checkout.razorpay.com/v1/checkout.js"]');\n    if (existing) { existing.addEventListener('load', () => resolve(true), { once: true }); existing.addEventListener('error', () => resolve(false), { once: true }); return; }\n    const script = document.createElement('script'); script.src = 'https://checkout.razorpay.com/v1/checkout.js'; script.async = true;\n    script.onload = () => resolve(true); script.onerror = () => resolve(false); document.body.appendChild(script);\n  });\n}\n\n'''
+
+          # Keep exactly one Razorpay loader function; earlier patch workflows could insert it more than once.
+          matches = list(re.finditer(r"\nfunction loadRazorpayScript\(\) \{", text))
+          if len(matches) > 1:
+              def block_end(s, start):
+                  brace = s.find('{', start)
+                  depth = 0
+                  in_str = None
+                  esc = False
+                  for i in range(brace, len(s)):
+                      ch = s[i]
+                      if in_str:
+                          if esc:
+                              esc = False
+                          elif ch == '\\':
+                              esc = True
+                          elif ch == in_str:
+                              in_str = None
+                          continue
+                      if ch in "'\"`":
+                          in_str = ch
+                      elif ch == '{':
+                          depth += 1
+                      elif ch == '}':
+                          depth -= 1
+                          if depth == 0:
+                              j = i + 1
+                              while j < len(s) and s[j] in '\r\n':
+                                  j += 1
+                              return j
+                  return None
+              for m in reversed(matches[1:]):
+                  end = block_end(text, m.start())
+                  if end:
+                      text = text[:m.start()] + text[end:]
+
           if 'function loadRazorpayScript() {' not in text:
               text = text.replace('async function loadImage(src, crossOrigin = false) {', loader + 'async function loadImage(src, crossOrigin = false) {', 1)
 
@@ -57,7 +93,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add app/page.js package.json
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'Complete Razorpay Standard Checkout frontend'
+          git commit -m 'Fix duplicate Razorpay loader'
           git push
-
-# final cleanup trigger
