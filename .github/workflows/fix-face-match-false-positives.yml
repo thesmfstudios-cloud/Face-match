@@ -1,6 +1,9 @@
 name: Fix face matching false positives
 
 on:
+  push:
+    paths:
+      - '.github/workflows/fix-face-match-false-positives.yml'
   workflow_dispatch:
 
 jobs:
@@ -33,10 +36,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/page.js
-          git diff --cached --quiet || git commit -m "Tighten face matching threshold"
-          git push
+          if git diff --cached --quiet; then
+            echo 'No matcher changes needed.'
+          else
+            git commit -m "Tighten face matching threshold"
+            git push
+          fi
       - name: Remove one-time workflow
         run: |
-          git rm .github/workflows/fix-face-match-false-positives.yml
-          git commit -m "Remove one-time face match fix workflow"
-          git push
+          if git ls-files --error-unmatch .github/workflows/fix-face-match-false-positives.yml >/dev/null 2>&1; then
+            git rm .github/workflows/fix-face-match-false-positives.yml
+            git commit -m "Remove one-time face match fix workflow"
+            git push
+          fi
