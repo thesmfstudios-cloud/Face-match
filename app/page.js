@@ -217,7 +217,7 @@ export default function Home() {
             const verifyRes = await fetch('/api/verify-payment', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                eventSlug: EVENT_SLUG, selectedPhotoIds: selected,
+                eventSlug: EVENT_SLUG, selectedPhotoIds: selected, groupPhotoIds: selected.filter((id) => Number(livePhotos.find((p) => p.id === id)?.people_count || 1) > 1),
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_order_id: response.razorpay_order_id,
                 razorpay_signature: response.razorpay_signature,
