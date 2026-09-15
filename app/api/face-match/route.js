@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { SearchFacesByImage } from '@aws-sdk/client-rekognition';
+import { SearchFacesByImageCommand } from '@aws-sdk/client-rekognition';
 import { getCollectionId, getRekognitionClient } from '../../../lib/aws-rekognition';
 
 export const runtime = 'nodejs';
@@ -26,7 +26,7 @@ export async function POST(request) {
     const client = getRekognitionClient();
     const collectionId = getCollectionId(eventSlug);
 
-    const response = await client.send(new SearchFacesByImage({
+    const response = await client.send(new SearchFacesByImageCommand({
       CollectionId: collectionId,
       Image: { Bytes: bytes },
       FaceMatchThreshold: 85,
