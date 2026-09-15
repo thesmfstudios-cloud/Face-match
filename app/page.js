@@ -140,6 +140,7 @@ export default function Home() {
     if (!selfie) return;
     await requestScanNotification();
     await requestScanNotification();
+    await requestScanNotification();
     if (!photos.length) {
       setMatched(true);
       setMatchMessage('Demo mode is active. Supabase live photos will be matched after connection.');
@@ -178,6 +179,7 @@ export default function Home() {
       setMatched(true);
       setMatching(false);
       setMatchMessage(results.length ? `${results.length} matching photos found.` : 'No close face matches found. Try a clearer selfie or better lighting.');
+      notifyScanComplete(results.length);
       notifyScanComplete(results.length);
       notifyScanComplete(results.length);
       setPhotos((current) => {
