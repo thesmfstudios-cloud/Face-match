@@ -1,0 +1,137 @@
+name: Apply admin photo library UI
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-admin-photo-library.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch admin photo library
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('app/page.js')
+          text = p.read_text()
+
+          text = text.replace(
+              "import { ArrowRight, Camera, Check, CheckCircle2, ImagePlus, IndianRupee, Lock, Search, ShieldCheck, Sparkles, Upload, X, Loader2, RefreshCw, Video } from 'lucide-react';",
+              "import { ArrowRight, Camera, Check, CheckCircle2, ImagePlus, IndianRupee, Lock, Search, ShieldCheck, Sparkles, Upload, X, Loader2, RefreshCw, Video, FolderOpen, HardDrive } from 'lucide-react';"
+          )
+
+          new_admin = r'''function AdminView() {
+  const ref = useRef(null);
+  const [code, setCode] = useState('');
+  const [files, setFiles] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [result, setResult] = useState('');
+  const [orders, setOrders] = useState([]);
+  const [loadingOrders, setLoadingOrders] = useState(false);
+  const [library, setLibrary] = useState(null);
+  const [loadingLibrary, setLoadingLibrary] = useState(false);
+
+  const upload = async () => {
+    if (!code || !files.length) return;
+    setUploading(true); setResult('Uploading originals and generating previews…');
+    try {
+      const form = new FormData();
+      form.append('eventSlug', EVENT_SLUG);
+      [...files].forEach((f) => form.append('photos', f));
+      const res = await fetch('/api/admin/upload', { method: 'POST', headers: { 'x-admin-code': code }, body: form });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'Upload failed.');
+      setResult(`${body.count} photos uploaded successfully.`); setFiles([]); if (ref.current) ref.current.value = '';
+      await loadLibrary();
+    } catch (err) { setResult(err?.message || 'Upload failed.'); }
+    finally { setUploading(false); }
+  };
+
+  const loadOrders = async () => {
+    if (!code) return;
+    setLoadingOrders(true);
+    try { const res = await fetch('/api/admin/orders', { headers: { 'x-admin-code': code } }); const body = await res.json(); if (!res.ok) throw new Error(body.error || 'Could not load orders.'); setOrders(body.orders || []); }
+    catch (err) { setResult(err?.message || 'Could not load orders.'); }
+    finally { setLoadingOrders(false); }
+  };
+
+  const loadLibrary = async () => {
+    if (!code) return;
+    setLoadingLibrary(true);
+    try {
+      const res = await fetch(`/api/admin/library?eventSlug=${encodeURIComponent(EVENT_SLUG)}`, { headers: { 'x-admin-code': code }, cache: 'no-store' });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'Could not load photo library.');
+      setLibrary(body);
+    } catch (err) { setResult(err?.message || 'Could not load photo library.'); }
+    finally { setLoadingLibrary(false); }
+  };
+
+  const review = async (id, status) => {
+    const res = await fetch('/api/admin/orders', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'x-admin-code': code }, body: JSON.stringify({ id, status }) });
+    const body = await res.json(); if (!res.ok) return setResult(body.error || 'Update failed.');
+    setOrders((current) => current.map((o) => o.id === id ? { ...o, status } : o));
+  };
+
+  const formatBytes = (bytes) => {
+    const n = Number(bytes || 0);
+    if (!n) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1);
+    return `${(n / (1024 ** i)).toFixed(i ? 1 : 0)} ${units[i]}`;
+  };
+
+  const storage = library?.storage;
+  const usedPct = storage?.quota_bytes ? Math.min(100, (storage.used_bytes / storage.quota_bytes) * 100) : null;
+
+  return <section className="adminPage">
+    <div className="adminHeader"><div><span className="eyebrow">ADMIN CONSOLE</span><h1>Event photo manager</h1><p>Upload originals, generate private previews, inspect every event photo, and monitor completed Razorpay orders.</p></div><div className="ready"><CheckCircle2 size={16}/> System ready</div></div>
+    <div className="adminAccess"><Lock size={16}/><input type="password" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Admin access code"/><span>Server-only access</span></div>
+
+    <div className="adminGrid">
+      <div className="uploadPanel"><div className="uploadIcon"><ImagePlus size={30}/></div><h2>Upload event originals</h2><p>Files are sent to the private <code>fm-originals</code> bucket. A smaller preview is created server-side.</p><input ref={ref} hidden type="file" multiple accept="image/*" onChange={(e) => setFiles(e.target.files || [])}/><button onClick={() => ref.current?.click()} className="darkButton"><Upload size={17}/> Choose photos</button>{files.length > 0 && <button onClick={upload} className="primaryButton adminUpload" disabled={uploading || !code}>{uploading ? <><Loader2 size={17} className="spin"/> Uploading…</> : <>Upload {files.length} photos <ArrowRight size={17}/></>}</button>}{result && <div className="uploadSuccess"><CheckCircle2 size={16}/> {result}</div>}</div>
+      <div className="workflowPanel"><div className="panelTitle">Production workflow</div><Workflow n="01" t="Upload originals" s="Live"/><Workflow n="02" t="Generate downscaled previews" s="Server"/><Workflow n="03" t="Customer face matching" s="Browser AI"/><Workflow n="04" t="Verify Razorpay payments" s="Automatic"/></div>
+    </div>
+
+    <div className="libraryPanel">
+      <div className="ordersHead"><div><div className="panelTitle"><FolderOpen size={17}/> Photo library</div><p>Every uploaded event photo is visible here as a clear preview. Originals remain private in <code>fm-originals</code>.</p></div><button className="refreshButton" disabled={!code || loadingLibrary} onClick={loadLibrary}>{loadingLibrary ? <Loader2 size={16} className="spin"/> : <RefreshCw size={16}/>} Refresh library</button></div>
+      {!library ? <div className="emptyOrders">Enter the admin access code and click <b>Refresh library</b> to load all photos and storage usage.</div> : <>
+        <div className="libraryStats">
+          <div className="libraryStat"><span>PHOTOS</span><strong>{library.photos?.length || 0}</strong><small>{library.event?.name || EVENT_SLUG}</small></div>
+          <div className="libraryStat"><span>ORIGINALS</span><strong>{formatBytes(storage?.originals?.bytes)}</strong><small>{storage?.originals?.count || 0} files · private</small></div>
+          <div className="libraryStat"><span>PREVIEWS</span><strong>{formatBytes(storage?.previews?.bytes)}</strong><small>{storage?.previews?.count || 0} files · public</small></div>
+          <div className="libraryStat"><span><HardDrive size={13}/> SPACE REMAINING</span><strong>{storage?.quota_configured ? formatBytes(storage.remaining_bytes) : '—'}</strong><small>{storage?.quota_configured ? `${usedPct.toFixed(1)}% used` : 'Set SUPABASE_STORAGE_LIMIT_GB in Vercel'}</small></div>
+        </div>
+        {storage?.quota_configured && <div className="storageMeter"><div className="storageMeterHead"><b>Total storage</b><span>{formatBytes(storage.used_bytes)} / {formatBytes(storage.quota_bytes)}</span></div><div className="storageMeterTrack"><div className="storageMeterFill" style={{ width: `${usedPct}%` }}/></div></div>}
+        <div className="folderBar"><FolderOpen size={17}/><div><b>{EVENT_SLUG}</b><span>{library.photos?.length || 0} photos · originals + previews</span></div></div>
+        {library.photos?.length ? <div className="photoLibraryGrid">{library.photos.map((photo) => <div className="photoLibraryCard" key={photo.id}><div className="photoLibraryImage">{photo.preview_url ? <img src={photo.preview_url} alt={photo.original_filename || 'Event photo'} loading="lazy"/> : <div className="photoNoPreview">No preview</div>}<span className="photoBadge">₹{photo.price}</span></div><div className="photoLibraryMeta"><b title={photo.original_filename}>{photo.original_filename}</b><span>{photo.people_count || 1} {Number(photo.people_count || 1) === 1 ? 'person' : 'people'} · {photo.processing_status}</span></div></div>)}</div> : <div className="emptyOrders">No photos have been finalized for this event yet.</div>}
+      </>}
+    </div>
+
+    <div className="ordersPanel"><div className="ordersHead"><div><div className="panelTitle">Payment queue</div><p>Razorpay payments are verified server-side; completed orders appear here automatically.</p></div><button className="refreshButton" disabled={!code || loadingOrders} onClick={loadOrders}>{loadingOrders ? <Loader2 size={16} className="spin"/> : <RefreshCw size={16}/>} Refresh</button></div>{orders.length === 0 ? <div className="emptyOrders">No completed payment orders loaded yet.</div> : <div className="ordersTable">{orders.map((o) => <div className="orderRow" key={o.id}><div><b>{o.id.slice(0, 8)}…</b><span>Payment {o.utr}</span></div><div><strong>₹{o.total}</strong><span>{new Date(o.created_at).toLocaleString()}</span></div><div className="orderStatus">{o.status}</div><div className="orderActions">{o.status === 'payment_submitted' && <><button onClick={() => review(o.id, 'approved')}>Approve</button><button onClick={() => review(o.id, 'rejected')}>Reject</button></>}</div></div>)}</div>}</div>
+    <div className="securityCallout"><ShieldCheck size={19}/><div><b>Private originals</b><p>Customers never query the original bucket. The original path stays server-side and can be used for signed downloads after verified payment.</p></div></div>
+  </section>;
+}
+'''
+
+          text = re.sub(r"function AdminView\(\) \{.*?^function Workflow", new_admin + "function Workflow", text, count=1, flags=re.S|re.M)
+
+          p.write_text(text)
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/page.js
+          git commit -m 'Add admin photo library and storage dashboard'
+          rm -f .github/workflows/apply-admin-photo-library.yml
+          git add -A
+          git commit -m 'Remove temporary admin photo library patch workflow' || true
+          git push
