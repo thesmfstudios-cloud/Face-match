@@ -1,0 +1,8 @@
+name: Rekognition setup note
+on:
+  workflow_dispatch:
+jobs:
+  note:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Amazon Rekognition integration is configured in the application. Add AWS Vercel env vars and build the event index from /admin."
