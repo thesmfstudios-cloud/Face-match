@@ -1,4 +1,5 @@
 import './globals.css';
+import './smf-reference.css';
 
 export const metadata = {
   title: 'SMF Photo Match',
