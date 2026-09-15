@@ -5,7 +5,8 @@ import { ArrowRight, CheckCircle2, ImagePlus, Lock, Loader2, Upload } from 'luci
 import { getSupabaseBrowser } from '../../lib/supabase-browser';
 
 const EVENT_SLUG = 'sam-college-2026';
-const MAX_BATCH = 20;
+const MAX_BATCH = 500;
+const REQUEST_CHUNK = 25;
 
 export default function AdminUploadPage() {
   const inputRef = useRef(null);
@@ -17,33 +18,38 @@ export default function AdminUploadPage() {
   const upload = async () => {
     if (!code || !files.length || busy) return;
     setBusy(true);
-    setStatus(`Preparing ${files.length} photos…`);
+    const selected = files.slice(0, MAX_BATCH);
+    const uploaded = [];
     try {
-      const selected = files.slice(0, MAX_BATCH);
-      const urlRes = await fetch('/api/admin/upload-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
-        body: JSON.stringify({ eventSlug: EVENT_SLUG, files: selected.map((f) => ({ name: f.name, type: f.type, size: f.size })) }),
-      });
-      const urlText = await urlRes.text();
-      let urlBody;
-      try { urlBody = JSON.parse(urlText); } catch { throw new Error(urlText.slice(0, 180) || `Server error (${urlRes.status})`); }
-      if (!urlRes.ok) throw new Error(urlBody.error || 'Could not prepare upload.');
+      for (let offset = 0; offset < selected.length; offset += REQUEST_CHUNK) {
+        const chunk = selected.slice(offset, offset + REQUEST_CHUNK);
+        setStatus(`Preparing photos ${offset + 1}-${Math.min(offset + REQUEST_CHUNK, selected.length)} of ${selected.length}…`);
+        const urlRes = await fetch('/api/admin/upload-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
+          body: JSON.stringify({ eventSlug: EVENT_SLUG, files: chunk.map((f) => ({ name: f.name, type: f.type, size: f.size })) }),
+        });
+        const urlText = await urlRes.text();
+        let urlBody;
+        try { urlBody = JSON.parse(urlText); } catch { throw new Error(urlText.slice(0, 180) || `Server error (${urlRes.status})`); }
+        if (!urlRes.ok) throw new Error(urlBody.error || 'Could not prepare upload.');
 
-      const supabase = getSupabaseBrowser();
-      const uploaded = [];
-      for (let i = 0; i < selected.length; i++) {
-        const file = selected[i];
-        const u = urlBody.uploads[i];
-        setStatus(`Uploading ${i + 1}/${selected.length}: ${file.name}`);
-        const original = await supabase.storage.from('fm-originals').uploadToSignedUrl(u.originalPath, u.originalToken, file, { contentType: file.type || 'image/jpeg' });
-        if (original.error) throw original.error;
-        const previewFile = await makePreview(file);
-        const preview = await supabase.storage.from('fm-previews').uploadToSignedUrl(u.previewPath, u.previewToken, previewFile, { contentType: 'image/jpeg' });
-        if (preview.error) throw preview.error;
-        uploaded.push({ name: u.name, originalPath: u.originalPath, previewPath: u.previewPath });
+        const supabase = getSupabaseBrowser();
+        for (let i = 0; i < chunk.length; i++) {
+          const file = chunk[i];
+          const u = urlBody.uploads[i];
+          const overallIndex = offset + i + 1;
+          setStatus(`Uploading ${overallIndex}/${selected.length}: ${file.name}`);
+          const original = await supabase.storage.from('fm-originals').uploadToSignedUrl(u.originalPath, u.originalToken, file, { contentType: file.type || 'image/jpeg' });
+          if (original.error) throw original.error;
+          const previewFile = await makePreview(file);
+          const preview = await supabase.storage.from('fm-previews').uploadToSignedUrl(u.previewPath, u.previewToken, previewFile, { contentType: 'image/jpeg' });
+          if (preview.error) throw preview.error;
+          uploaded.push({ name: u.name, originalPath: u.originalPath, previewPath: u.previewPath });
+        }
       }
 
+      setStatus(`Finalizing ${uploaded.length} photos…`);
       const finalRes = await fetch('/api/admin/upload-finalize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
@@ -71,14 +77,14 @@ export default function AdminUploadPage() {
     <section style={{ maxWidth: 1000, margin: '0 auto', padding: '70px 24px' }}>
       <div style={{ color: '#89857d', fontSize: 11, fontWeight: 700, letterSpacing: '.15em' }}>SAM COLLEGE · PHOTO DELIVERY</div>
       <h1 style={{ fontSize: 'clamp(42px,6vw,68px)', letterSpacing: '-.06em', margin: '10px 0 12px' }}>Upload event originals.</h1>
-      <p style={{ maxWidth: 650, color: '#777', lineHeight: 1.6 }}>Large files upload directly to Supabase Storage, avoiding the Vercel request-size limit. A lightweight preview is generated in your browser for face matching.</p>
+      <p style={{ maxWidth: 650, color: '#777', lineHeight: 1.6 }}>Large files upload directly to Supabase Storage. Select up to 500 photos in one batch; uploads are prepared in small chunks for reliability, and a clear low-resolution preview is generated in your browser for face matching.</p>
       <div style={{ marginTop: 30, background: '#171717', color: '#fff', borderRadius: 20, padding: 24 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#242424', borderRadius: 10, padding: '12px 14px' }}><Lock size={16}/><input type="password" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Admin access code" style={{ flex: 1, background: 'transparent', color: '#fff', border: 0, outline: 0 }} /></label>
         <div style={{ marginTop: 18, border: '1px dashed #555', borderRadius: 15, padding: 28, textAlign: 'center' }}>
           <div style={{ width: 58, height: 58, borderRadius: 14, background: '#2a2a2a', display: 'grid', placeItems: 'center', margin: '0 auto 14px' }}><ImagePlus size={28}/></div>
-          <input ref={inputRef} hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(e) => setFiles(Array.from(e.target.files || []))}/>
+          <input ref={inputRef} hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(e) => setFiles(Array.from(e.target.files || []).slice(0, MAX_BATCH))}/>
           <button onClick={() => inputRef.current?.click()} style={{ background: '#fff', color: '#111', border: 0, borderRadius: 9, padding: '11px 15px', fontWeight: 700, cursor: 'pointer' }}><Upload size={16} style={{ verticalAlign: '-3px', marginRight: 7 }}/> Choose photos</button>
-          <div style={{ marginTop: 12, color: '#aaa', fontSize: 12 }}>{files.length ? `${files.length} files selected` : 'Select up to 20 photos per batch'}</div>
+          <div style={{ marginTop: 12, color: '#aaa', fontSize: 12 }}>{files.length ? `${files.length} files selected${files.length >= MAX_BATCH ? ' (maximum)' : ''}` : 'Select up to 500 photos per batch'}</div>
         </div>
         {files.length > 0 && <button disabled={!code || busy} onClick={upload} style={{ marginTop: 16, width: '100%', background: '#fff', color: '#111', border: 0, borderRadius: 10, padding: 14, fontWeight: 800, cursor: busy ? 'wait' : 'pointer', opacity: !code || busy ? .45 : 1 }}>{busy ? <><Loader2 size={17} className="spin"/> Uploading…</> : <>Upload {Math.min(files.length, MAX_BATCH)} photos <ArrowRight size={17}/></>}</button>}
         {status && <div style={{ marginTop: 15, fontSize: 12, color: status.startsWith('Upload failed') ? '#ff9d9d' : '#a9e4b4', display: 'flex', gap: 7, alignItems: 'center' }}>{!status.startsWith('Upload failed') && <CheckCircle2 size={16}/>} {status}</div>}
