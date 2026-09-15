@@ -172,7 +172,7 @@ export default function AdminUploadPage() {
         <label style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#2a2a27', borderRadius: 10, padding: '12px 14px' }}><Lock size={16}/><input type="password" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Admin access code" style={{ flex: 1, background: 'transparent', color: '#fff', border: 0, outline: 0 }} /></label>
         <div style={{ marginTop: 18, border: '1px dashed #5b5a55', borderRadius: 15, padding: 28, textAlign: 'center', background: '#191917' }}>
           <div style={{ width: 58, height: 58, borderRadius: 14, background: '#2b2b28', display: 'grid', placeItems: 'center', margin: '0 auto 14px' }}><ImagePlus size={28}/></div>
-          <input ref={inputRef} hidden type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(e) => setFiles(Array.from(e.target.files || []).slice(0, MAX_BATCH))}/>
+          <input ref={inputRef} hidden type="file" multiple accept=".jpg,.jpeg,.png,.webp" onChange={(e) => { const picked = Array.from(e.target.files || []).filter((file) => /\.(jpe?g|png|webp)$/i.test(file.name)); setFiles(picked.slice(0, MAX_BATCH)); }}/>
           <button onClick={() => inputRef.current?.click()} style={{ background: '#f3f1eb', color: '#111', border: 0, borderRadius: 9, padding: '11px 15px', fontWeight: 700, cursor: 'pointer' }}><Upload size={16} style={{ verticalAlign: '-3px', marginRight: 7 }}/> Choose photos</button>
           <div style={{ marginTop: 12, color: '#aaa69d', fontSize: 12 }}>{files.length ? `${files.length} files selected${files.length >= MAX_BATCH ? ' (maximum)' : ''}` : 'Select up to 500 photos per batch'}</div>
         </div>
