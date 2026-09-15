@@ -9,6 +9,7 @@ AI-style event photo delivery MVP for SMF Studio.
 - ₹10 single / ₹30 group pricing
 - UPI payment confirmation flow (manual UTR approval)
 - Admin upload dashboard UI
+- Direct-to-Supabase admin photo uploads
 
 ## Next production integration
 - Supabase Storage + Postgres
@@ -16,3 +17,5 @@ AI-style event photo delivery MVP for SMF Studio.
 - Private original files + signed download URLs
 - UPI QR configuration
 - Admin payment approvals
+
+Deployment trigger: 2026-09-15 admin uploader deployment fix.
