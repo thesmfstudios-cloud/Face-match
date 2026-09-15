@@ -1,0 +1,64 @@
+name: Fix payment checkout and scan messaging
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: "!contains(github.event.head_commit.message, '[payment-scan-fix-done]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 2
+
+      - name: Patch frontend
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/page.js')
+          s = p.read_text()
+
+          s = s.replace(
+              "setMatchMessage(`Scanning your photos… 0/${photos.length} scanned. This can take up to 5–10 minutes. Please keep this page open.`);",
+              "setMatchMessage(`Scanning your photos… 0/${photos.length} scanned.`);",
+              1,
+          )
+          s = s.replace(
+              "setMatchMessage(`Scanning your photos… ${Math.min(offset + batch.length, photos.length)}/${photos.length} scanned. This can take up to 5–10 minutes. Please keep this page open.`);",
+              "setMatchMessage(`Scanning your photos… ${Math.min(offset + batch.length, photos.length)}/${photos.length} scanned.`);",
+              1,
+          )
+          s = s.replace(
+              "key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,",
+              "key: createBody.key_id,",
+              1,
+          )
+          if "if (!createBody.key_id) throw new Error('Razorpay key configuration is missing.');" not in s:
+              s = s.replace(
+                  "if (!createRes.ok) throw new Error(createBody.error || 'Could not create payment order.');",
+                  "if (!createRes.ok) throw new Error(createBody.error || 'Could not create payment order.');\n      if (!createBody.key_id) throw new Error('Razorpay key configuration is missing.');",
+                  1,
+              )
+          p.write_text(s)
+          PY
+
+      - name: Commit and clean up
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/page.js
+          if ! git diff --cached --quiet; then
+            git commit -m "Fix payment checkout and scan messaging [payment-scan-fix-done]"
+            git push
+          fi
+          git rm -f .github/workflows/fix-payment-and-scan-message.yml || true
+          git commit -m "Remove temporary payment scan fix workflow [payment-scan-fix-done]" || true
+          git push || true
