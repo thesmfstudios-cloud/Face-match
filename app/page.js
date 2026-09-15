@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { ArrowRight, Camera, Check, CheckCircle2, ImagePlus, IndianRupee, Lock, Search, ShieldCheck, Sparkles, Upload, X, Loader2, RefreshCw, ExternalLink } from 'lucide-react';
+import { ArrowRight, Camera, Check, CheckCircle2, ImagePlus, IndianRupee, Lock, Search, ShieldCheck, Sparkles, Upload, X, Loader2, RefreshCw, ExternalLink, Video } from 'lucide-react';
 import { getSupabaseBrowser } from '../lib/supabase-browser';
 
 const EVENT_SLUG = 'sam-college-2026';
@@ -33,6 +33,9 @@ export default function Home() {
   const [paymentSent, setPaymentSent] = useState(false);
   const [orderId, setOrderId] = useState('');
   const [dataError, setDataError] = useState('');
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const videoRef = useRef(null);
+  const cameraStreamRef = useRef(null);
 
   const livePhotos = photos.length ? photos : DEMO_PHOTOS;
   const total = useMemo(() => selected.reduce((sum, id) => sum + Number(livePhotos.find((p) => p.id === id)?.price || 0), 0), [selected, livePhotos]);
@@ -55,6 +58,54 @@ export default function Home() {
     })();
     return () => { active = false; };
   }, []);
+
+  const stopCamera = () => {
+    const stream = cameraStreamRef.current;
+    if (stream) stream.getTracks().forEach((track) => track.stop());
+    cameraStreamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setCameraOpen(false);
+  };
+
+  const startCamera = async () => {
+    setMatchMessage('');
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access is not supported in this browser.');
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      cameraStreamRef.current = stream;
+      setCameraOpen(true);
+      requestAnimationFrame(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
+        }
+      });
+    } catch (error) {
+      setMatchMessage(error?.message || 'Could not open camera. Please allow camera permission.');
+    }
+  };
+
+  const captureCameraSelfie = () => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) return;
+    const canvas = document.createElement('canvas');
+    const max = 1280;
+    const scale = Math.min(1, max / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const file = new File([blob], `camera-selfie-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      setSelfie(file);
+      setSelfieName('Camera selfie');
+      setMatched(false);
+      setMatchMessage('');
+      setSelected([]);
+      stopCamera();
+    }, 'image/jpeg', 0.9);
+  };
 
   const chooseSelfie = (e) => {
     const file = e.target.files?.[0];
@@ -147,7 +198,7 @@ export default function Home() {
     {mode === 'customer' ? <>
       <section className="hero"><div className="eyebrowPill"><Sparkles size={14}/> AI PHOTO DELIVERY · SAM COLLEGE</div><h1>Find the moments<br/><em>you’re in.</em></h1><p className="heroCopy">Upload one clear selfie. We run face recognition against the event gallery and only show likely matches.</p><div className="eventBar"><div><span className="micro">EVENT</span><strong>{eventName}</strong></div><div className="eventMeta"><b>{photoCount}</b> photos indexed</div></div></section>
 
-      <section className="finderCard"><div className="finderIcon"><Camera size={28}/></div><div className="finderBody"><div className="finderTitle">Find my photos</div><div className="finderHint">Use a front-facing selfie with your face clearly visible.</div><input id="selfie" hidden type="file" accept="image/*" capture="user" onChange={chooseSelfie}/><label className="uploadButton" htmlFor="selfie">{selfie ? <><CheckCircle2 size={17}/> {selfieName}</> : <><Upload size={17}/> Choose selfie</>}</label></div><button className="primaryButton" disabled={!selfie || matching} onClick={runFaceMatch}>{matching ? <><Loader2 size={17} className="spin"/> Matching…</> : <>Find photos <ArrowRight size={17}/></>}</button></section>
+      <section className="finderCard"><div className="finderIcon"><Camera size={28}/></div><div className="finderBody"><div className="finderTitle">Find my photos</div><div className="finderHint">Use a front-facing selfie or camera capture with your face clearly visible.</div><input id="selfie" hidden type="file" accept="image/*" capture="user" onChange={chooseSelfie}/><div className="finderControls"><label className="uploadButton" htmlFor="selfie">{selfie ? <><CheckCircle2 size={17}/> {selfieName}</> : <><Upload size={17}/> Upload photo</>}</label><button type="button" className="cameraButton" onClick={startCamera}><Video size={17}/> Use camera</button></div></div><button className="primaryButton" disabled={!selfie || matching} onClick={runFaceMatch}>{matching ? <><Loader2 size={17} className="spin"/> Matching…</> : <>Find photos <ArrowRight size={17}/></>}</button></section>
 
       {dataError && <div className="notice">{dataError}</div>}
       {matchMessage && <div className={`notice ${matchMessage.includes('found') ? 'successNotice' : ''}`}>{matchMessage}</div>}
@@ -158,6 +209,7 @@ export default function Home() {
       {selected.length > 0 && <div className="checkoutBar"><div className="checkoutSummary"><b>{selected.length} selected</b><span>Original-quality downloads</span></div><div className="checkoutAction"><strong>₹{total}</strong><button className="primaryButton" onClick={() => setPaymentOpen(true)}>Pay via UPI <ArrowRight size={17}/></button></div></div>}
     </> : <AdminView />}
 
+    {cameraOpen && <CameraModal videoRef={videoRef} onCapture={captureCameraSelfie} onClose={stopCamera}/>} 
     {paymentOpen && <PaymentModal amount={total} utr={utr} setUtr={setUtr} onClose={() => setPaymentOpen(false)} onSubmit={submitPayment}/>}<footer className="footer">© 2026 SMF Studio · Face Match Photo Delivery · Secure checkout</footer>
   </main>;
 }
@@ -167,6 +219,10 @@ async function loadImage(src, crossOrigin = false) {
 }
 
 function Feature({ icon, n, title, copy }) { return <div className="feature"><div className="featureTop"><span>{n}</span><div>{icon}</div></div><h3>{title}</h3><p>{copy}</p></div>; }
+
+function CameraModal({ videoRef, onCapture, onClose }) {
+  return <div className="cameraBackdrop"><div className="cameraModal"><div className="cameraHeader"><div><div className="modalEyebrow"><Video size={14}/> CAMERA SCAN</div><h2>Take a clear selfie</h2><p>Keep your face centered and look at the camera.</p></div><button className="closeButton" onClick={onClose}><X size={19}/></button></div><div className="cameraViewport"><video ref={videoRef} autoPlay playsInline muted/></div><button className="captureButton" onClick={onCapture}><Camera size={19}/> Capture selfie</button></div></div>;
+}
 
 function PaymentModal({ amount, utr, setUtr, onClose, onSubmit }) {
   const payLink = `upi://pay?pa=${encodeURIComponent(UPI_ID)}&pn=SMF%20Studio&am=${amount}&cu=INR&tn=Photo%20Match`;
