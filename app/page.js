@@ -36,6 +36,7 @@ export default function Home() {
   const cameraStreamRef = useRef(null);
   const [downloadStarting, setDownloadStarting] = useState(false);
   const [downloadStarted, setDownloadStarted] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState('default');
 
   const livePhotos = photos.length ? photos : DEMO_PHOTOS;
   const total = useMemo(() => selected.reduce((sum, id) => { const p = livePhotos.find((x) => x.id === id); const people = Number(p?.people_count || 1); return sum + (people > 1 ? 15 : 5); }, 0), [selected, livePhotos]);
@@ -117,15 +118,34 @@ export default function Home() {
     setSelected([]);
   };
 
+  const requestScanNotification = async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    try {
+      const permission = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
+      setNotificationPermission(permission);
+    } catch {}
+  };
+
+  const notifyScanComplete = (count) => {
+    if (typeof window === 'undefined' || !('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      new Notification('SMF Photo Match', {
+        body: count ? `${count} matching photos are ready to view.` : 'Your photo scan is complete. Tap to view your results.',
+        icon: '/favicon.ico',
+      });
+    } catch {}
+  };
+
   const runFaceMatch = async () => {
     if (!selfie) return;
+    await requestScanNotification();
     if (!photos.length) {
       setMatched(true);
       setMatchMessage('Demo mode is active. Supabase live photos will be matched after connection.');
       return;
     }
     setMatching(true);
-    setMatchMessage('Loading face AI and scanning the event gallery…');
+    setMatchMessage('Scanning your photos… This can take up to 5–10 minutes. Please keep this page open.');
     try {
       const faceapi = await import('@vladmandic/face-api');
       await Promise.all([
@@ -157,6 +177,7 @@ export default function Home() {
       setMatched(true);
       setMatching(false);
       setMatchMessage(results.length ? `${results.length} matching photos found.` : 'No close face matches found. Try a clearer selfie or better lighting.');
+      notifyScanComplete(results.length);
       setPhotos((current) => {
         const map = new Map(results.map((r) => [r.id, r]));
         return current.map((p) => map.get(p.id) || { ...p, no_match: true });
@@ -290,6 +311,7 @@ export default function Home() {
       <section className="hero"><div className="eyebrowPill"><Sparkles size={14}/> AI PHOTO DELIVERY · SAM COLLEGE</div><h1>Find the moments<br/><em>you’re in.</em></h1><p className="heroCopy">Upload one clear selfie. We run face recognition against the event gallery and only show likely matches.</p><div className="eventBar"><div><span className="micro">EVENT</span><strong>{eventName}</strong></div><div className="eventMeta"><b>{photoCount}</b> photos indexed</div></div></section>
 
       <section className="finderCard"><div className="finderIcon"><Camera size={28}/></div><div className="finderBody"><div className="finderTitle">Find my photos</div><div className="finderHint">Use a front-facing selfie or camera capture with your face clearly visible.</div><input id="selfie" hidden type="file" accept="image/*" capture="user" onChange={chooseSelfie}/><div className="finderControls"><label className="uploadButton" htmlFor="selfie">{selfie ? <><CheckCircle2 size={17}/> {selfieName}</> : <><Upload size={17}/> Upload photo</>}</label><button type="button" className="cameraButton" onClick={startCamera}><Video size={17}/> Use camera</button></div></div><button className="primaryButton" disabled={!selfie || matching} onClick={runFaceMatch}>{matching ? <><Loader2 size={17} className="spin"/> Matching…</> : <>Find photos <ArrowRight size={17}/></>}</button></section>
+      <div className="scanHelp">⏳ Finding your photos can take up to 5–10 minutes. Please keep this page open.<br/><span>🔔 We’ll let you know as soon as your photos are ready.</span></div>
 
       {dataError && <div className="notice">{dataError}</div>}
       {matchMessage && <div className={`notice ${matchMessage.includes('found') ? 'successNotice' : ''}`}>{matchMessage}</div>}
