@@ -50,12 +50,15 @@ export async function POST(request) {
 
     const rows = [];
     for (const object of originals || []) {
-      const name = String(object?.name || '');
+      const fullPath = String(object?.name || '');
+      if (!fullPath.startsWith(`${prefix}/`)) continue;
+      const name = fullPath.slice(prefix.length + 1);
       if (!name || name.length < 38) continue;
-      const uuidPart = name.slice(0, 36);
-      const originalPath = `${prefix}/${name}`;
+
+      const originalPath = fullPath;
       if (existingSet.has(originalPath)) continue;
 
+      const uuidPart = name.slice(0, 36);
       const previewName = `${uuidPart}-preview.jpg`;
       const previewPath = previewSet.has(previewName) ? `${prefix}/${previewName}` : null;
       const filename = name.slice(37) || name;
@@ -78,7 +81,8 @@ export async function POST(request) {
       inserted = data?.length || 0;
     }
 
-    await supabase.rpc('fm_refresh_event_photo_count', { p_event_id: event.id });
+    const { error: refreshError } = await supabase.rpc('fm_refresh_event_photo_count', { p_event_id: event.id });
+    if (refreshError) throw refreshError;
 
     return NextResponse.json({
       ok: true,
@@ -87,7 +91,8 @@ export async function POST(request) {
       inserted,
       existing_rows: existingSet.size,
       photos_without_preview: (originals || []).filter((object) => {
-        const name = String(object?.name || '');
+        const fullPath = String(object?.name || '');
+        const name = fullPath.startsWith(`${prefix}/`) ? fullPath.slice(prefix.length + 1) : fullPath;
         return name.length >= 36 && !previewSet.has(`${name.slice(0, 36)}-preview.jpg`);
       }).length,
     });
