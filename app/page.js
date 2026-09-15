@@ -6,6 +6,7 @@ import { getSupabaseBrowser } from '../lib/supabase-browser';
 
 const EVENT_SLUG = 'sam-college-2026';
 const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
+const SCAN_BATCH_SIZE = 4;
 
 const DEMO_PHOTOS = [
   { id: 'demo-1', people_count: 1, price: 5, preview_url: 'https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=1200&q=80' },
@@ -139,16 +140,13 @@ export default function Home() {
   const runFaceMatch = async () => {
     if (!selfie) return;
     await requestScanNotification();
-    await requestScanNotification();
-    await requestScanNotification();
-    await requestScanNotification();
     if (!photos.length) {
       setMatched(true);
       setMatchMessage('Demo mode is active. Supabase live photos will be matched after connection.');
       return;
     }
     setMatching(true);
-    setMatchMessage('Scanning your photos… This can take up to 5–10 minutes. Please keep this page open.');
+    setMatchMessage(`Scanning your photos… 0/${photos.length} scanned. This can take up to 5–10 minutes. Please keep this page open.`);
     try {
       const faceapi = await import('@vladmandic/face-api');
       await Promise.all([
@@ -165,24 +163,29 @@ export default function Home() {
       if (!probe) throw new Error('No clear face found in the selfie. Use a front-facing, well-lit selfie.');
 
       const results = [];
-      for (const photo of photos) {
+      const scanPhoto = async (photo) => {
         try {
           const img = await loadImage(photo.preview_url, true);
           const faces = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.45 }))
             .withFaceLandmarks().withFaceDescriptors();
           const distances = faces.map((f) => faceapi.euclideanDistance(probe.descriptor, f.descriptor));
           const best = distances.length ? Math.min(...distances) : 9;
-          if (best < 0.53) results.push({ ...photo, match_distance: best, people_count: Math.max(Number(photo.people_count || 1), faces.length), price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5 });
+          if (best < 0.53) return { ...photo, match_distance: best, people_count: Math.max(Number(photo.people_count || 1), faces.length), price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5 };
         } catch (err) {
           console.warn('Could not scan photo', photo.id, err);
         }
+        return null;
+      };
+
+      for (let offset = 0; offset < photos.length; offset += SCAN_BATCH_SIZE) {
+        const batch = photos.slice(offset, offset + SCAN_BATCH_SIZE);
+        setMatchMessage(`Scanning your photos… ${Math.min(offset + batch.length, photos.length)}/${photos.length} scanned. This can take up to 5–10 minutes. Please keep this page open.`);
+        const batchResults = await Promise.all(batch.map(scanPhoto));
+        for (const result of batchResults) if (result) results.push(result);
       }
       setMatched(true);
       setMatching(false);
       setMatchMessage(results.length ? `${results.length} matching photos found.` : 'No close face matches found. Try a clearer selfie or better lighting.');
-      notifyScanComplete(results.length);
-      notifyScanComplete(results.length);
-      notifyScanComplete(results.length);
       notifyScanComplete(results.length);
       setPhotos((current) => {
         const map = new Map(results.map((r) => [r.id, r]));
