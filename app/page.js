@@ -146,7 +146,7 @@ export default function Home() {
       return;
     }
     setMatching(true);
-    setMatchMessage(`Scanning your photos… 0/${photos.length} scanned. This can take up to 5–10 minutes. Please keep this page open.`);
+    setMatchMessage(`Scanning your photos… 0/${photos.length} scanned.`);
     try {
       const faceapi = await import('@vladmandic/face-api');
       await Promise.all([
@@ -179,7 +179,7 @@ export default function Home() {
 
       for (let offset = 0; offset < photos.length; offset += SCAN_BATCH_SIZE) {
         const batch = photos.slice(offset, offset + SCAN_BATCH_SIZE);
-        setMatchMessage(`Scanning your photos… ${Math.min(offset + batch.length, photos.length)}/${photos.length} scanned. This can take up to 5–10 minutes. Please keep this page open.`);
+        setMatchMessage(`Scanning your photos… ${Math.min(offset + batch.length, photos.length)}/${photos.length} scanned.`);
         const batchResults = await Promise.all(batch.map(scanPhoto));
         for (const result of batchResults) if (result) results.push(result);
       }
@@ -235,8 +235,9 @@ export default function Home() {
       });
       const createBody = await createRes.json();
       if (!createRes.ok) throw new Error(createBody.error || 'Could not create payment order.');
+      if (!createBody.key_id) throw new Error('Razorpay key configuration is missing.');
       const options = {
-        key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
+        key: createBody.key_id,
         amount: createBody.amount, currency: createBody.currency,
         name: 'SMF Studios',
         description: `${selected.length} event photo${selected.length === 1 ? '' : 's'}`,
