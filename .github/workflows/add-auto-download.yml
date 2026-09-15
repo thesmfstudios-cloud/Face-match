@@ -1,0 +1,127 @@
+name: Add automatic paid photo download
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch customer auto-download flow
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('app/page.js')
+          s = p.read_text()
+
+          # Add approval/download state.
+          anchor = "  const [cameraStreamRef] = useState(null);"
+          if anchor in s:
+              pass
+          state_anchor = "  const cameraStreamRef = useRef(null);\n"
+          state_new = state_anchor + "  const [downloadStarting, setDownloadStarting] = useState(false);\n  const [downloadStarted, setDownloadStarted] = useState(false);\n"
+          if "const [downloadStarting" not in s:
+              if state_anchor not in s: raise SystemExit('state anchor missing')
+              s = s.replace(state_anchor, state_new, 1)
+
+          # Add helper before submitPayment.
+          fn_anchor = "  const submitPayment = async () => {\n"
+          helper = r'''  const downloadApprovedPhotos = async (approvedOrderId) => {
+    if (!approvedOrderId || !selected.length || downloadStarting || downloadStarted) return;
+    setDownloadStarting(true);
+    setMatchMessage('Payment approved. Starting your original downloads…');
+    try {
+      // Browsers may block many simultaneous downloads, so open them one by one with a short gap.
+      for (let i = 0; i < selected.length; i++) {
+        const photoId = selected[i];
+        const a = document.createElement('a');
+        a.href = `/api/orders/${approvedOrderId}/download?photoId=${encodeURIComponent(photoId)}`;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.download = '';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        if (i < selected.length - 1) await new Promise((resolve) => setTimeout(resolve, 700));
+      }
+      setDownloadStarted(true);
+      setMatchMessage(`${selected.length} original download${selected.length === 1 ? '' : 's'} started.`);
+    } catch (error) {
+      setMatchMessage(error?.message || 'Could not start original downloads.');
+    } finally {
+      setDownloadStarting(false);
+    }
+  };
+
+'''
+          if fn_anchor not in s: raise SystemExit('submitPayment anchor missing')
+          if 'const downloadApprovedPhotos = async' not in s:
+              s = s.replace(fn_anchor, helper + fn_anchor, 1)
+
+          # Poll approved order after payment submission.
+          poll_anchor = "  const displayPhotos = matched && photos.length ? photos.filter((p) => !p.no_match) : livePhotos;\n"
+          poll = r'''  useEffect(() => {
+    if (!orderId || !paymentSent || downloadStarted) return undefined;
+    let cancelled = false;
+    let timer = null;
+    const check = async () => {
+      try {
+        const res = await fetch(`/api/orders/${orderId}/status`, { cache: 'no-store' });
+        if (!res.ok) throw new Error('Could not check payment status.');
+        const body = await res.json();
+        const status = body.order?.status;
+        if (cancelled) return;
+        if (status === 'approved' || status === 'fulfilled') {
+          await downloadApprovedPhotos(orderId);
+          return;
+        }
+        if (status === 'rejected') {
+          setMatchMessage('Payment was not approved. Please contact the event photographer.');
+          return;
+        }
+        timer = setTimeout(check, 5000);
+      } catch {
+        if (!cancelled) timer = setTimeout(check, 7000);
+      }
+    };
+    check();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [orderId, paymentSent, downloadStarted, selected]);
+
+'''
+          if poll_anchor not in s: raise SystemExit('displayPhotos anchor missing')
+          if "fetch(`/api/orders/${orderId}/status`" not in s:
+              s = s.replace(poll_anchor, poll + poll_anchor, 1)
+
+          # Change success notice to communicate automatic waiting.
+          old = "Payment submitted. UTR recorded; admin verification is required."
+          new = "Payment submitted. UTR recorded. Originals will start downloading automatically after admin approval."
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
+
+      - name: Verify
+        run: |
+          grep -q "downloadApprovedPhotos" app/page.js
+          grep -q "/api/orders/${orderId}/status" app/page.js || grep -q "/api/orders/\${orderId}/status" app/page.js
+          grep -q "admin approval" app/page.js
+
+      - name: Commit and remove workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/page.js .github/workflows/add-auto-download.yml
+          git commit -m "Auto-start original downloads after payment approval"
+          git rm .github/workflows/add-auto-download.yml
+          git commit -m "Remove temporary auto-download workflow"
+          git push
