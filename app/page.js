@@ -9,11 +9,11 @@ const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
 
 const DEMO_PHOTOS = [
   { id: 'demo-1', people_count: 1, price: 5, preview_url: 'https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=1200&q=80' },
-  { id: 'demo-2', people_count: 4, price: 20, preview_url: 'https://images.unsplash.com/photo-1517457373958-b7bdd4587205?w=1200&q=80' },
-  { id: 'demo-3', people_count: 8, price: 20, preview_url: 'https://images.unsplash.com/photo-1519167758481-83f550bb49b3?w=1200&q=80' },
-  { id: 'demo-4', people_count: 2, price: 20, preview_url: 'https://images.unsplash.com/photo-1519741497674-611481863552?w=1200&q=80' },
+  { id: 'demo-2', people_count: 4, price: 15, preview_url: 'https://images.unsplash.com/photo-1517457373958-b7bdd4587205?w=1200&q=80' },
+  { id: 'demo-3', people_count: 8, price: 15, preview_url: 'https://images.unsplash.com/photo-1519167758481-83f550bb49b3?w=1200&q=80' },
+  { id: 'demo-4', people_count: 2, price: 15, preview_url: 'https://images.unsplash.com/photo-1519741497674-611481863552?w=1200&q=80' },
   { id: 'demo-5', people_count: 1, price: 5, preview_url: 'https://images.unsplash.com/photo-1531058020387-3be344556be6?w=1200&q=80' },
-  { id: 'demo-6', people_count: 6, price: 20, preview_url: 'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=1200&q=80' },
+  { id: 'demo-6', people_count: 6, price: 15, preview_url: 'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=1200&q=80' },
 ];
 
 export default function Home() {
@@ -38,7 +38,7 @@ export default function Home() {
   const [downloadStarted, setDownloadStarted] = useState(false);
 
   const livePhotos = photos.length ? photos : DEMO_PHOTOS;
-  const total = useMemo(() => selected.reduce((sum, id) => sum + Number(livePhotos.find((p) => p.id === id)?.price || 0), 0), [selected, livePhotos]);
+  const total = useMemo(() => selected.reduce((sum, id) => { const p = livePhotos.find((x) => x.id === id); const people = Number(p?.people_count || 1); return sum + (people > 1 ? 15 : 5); }, 0), [selected, livePhotos]);
 
   useEffect(() => {
     let active = true;
@@ -149,7 +149,7 @@ export default function Home() {
             .withFaceLandmarks().withFaceDescriptors();
           const distances = faces.map((f) => faceapi.euclideanDistance(probe.descriptor, f.descriptor));
           const best = distances.length ? Math.min(...distances) : 9;
-          if (best < 0.53) results.push({ ...photo, match_distance: best, people_count: Math.max(Number(photo.people_count || 1), faces.length), price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 20 : 5 });
+          if (best < 0.53) results.push({ ...photo, match_distance: best, people_count: Math.max(Number(photo.people_count || 1), faces.length), price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5 });
         } catch (err) {
           console.warn('Could not scan photo', photo.id, err);
         }
@@ -201,7 +201,7 @@ export default function Home() {
       if (!scriptLoaded || !window.Razorpay) throw new Error('Razorpay checkout could not be loaded.');
       const createRes = await fetch('/api/create-order', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventSlug: EVENT_SLUG, selectedPhotoIds: selected }),
+        body: JSON.stringify({ eventSlug: EVENT_SLUG, selectedPhotoIds: selected, groupPhotoIds: selected.filter((id) => Number(livePhotos.find((p) => p.id === id)?.people_count || 1) > 1) }),
       });
       const createBody = await createRes.json();
       if (!createRes.ok) throw new Error(createBody.error || 'Could not create payment order.');
@@ -295,7 +295,7 @@ export default function Home() {
       {matchMessage && <div className={`notice ${matchMessage.includes('found') ? 'successNotice' : ''}`}>{matchMessage}</div>}
       {paymentSent && <div className="notice successNotice"><CheckCircle2 size={17}/> Payment verified successfully. Your original downloads are starting now.{orderId && <> Order: <code>{orderId}</code></>}</div>}
 
-      {!matched ? <section className="howItWorks"><div className="howIntro"><span className="eyebrow">HOW IT WORKS</span><h2>One selfie. Your gallery.</h2></div><div className="howGrid"><Feature icon={<Search/>} n="01" title="Match your face" copy="Your selfie is compared with faces detected in event photos."/><Feature icon={<Lock/>} n="02" title="Preview securely" copy="Customers receive a clear, downscaled preview that can be downloaded for free; the full-resolution original stays private until verified payment."/><Feature icon={<IndianRupee/>} n="03" title="Buy what you want" copy="₹5 single photo · ₹20 group photo · free preview download · originals unlock after secure payment verification."/></div></section> : <section className="resultsSection"><div className="resultHeader"><div><span className="eyebrow">MATCH RESULTS</span><h2>Your photos <span>· {displayPhotos.length} matches</span></h2></div><div className="resultTrust"><Lock size={14}/> Originals locked</div></div><div className="photoGrid">{displayPhotos.map((p) => <div key={p.id} className={`photoCard ${selected.includes(p.id) ? 'chosen' : ''}`} role="button" tabIndex={0} onClick={() => toggle(p.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(p.id); } }}><img src={p.preview_url} alt="Event preview" crossOrigin="anonymous"/><div className="photoGradient"/><div className="photoBottom"><span>{Number(p.people_count || 1) > 1 ? 'Group' : 'Single'} · {p.people_count || 1} {(p.people_count || 1) === 1 ? 'face' : 'faces'}</span><b>₹{p.price || (Number(p.people_count || 1) > 1 ? 20 : 5)}</b></div>{selected.includes(p.id) && <div className="selectedBadge"><Check size={16}/></div>}<a className="previewLock" href={p.preview_url} download={p.original_filename || 'smf-preview.jpg'} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>DOWNLOAD FREE PREVIEW</a></div>)}</div><div className="pricingRow"><div><b>Single photo</b><span>₹5</span></div><div><b>Group photo</b><span>₹20</span></div><div className="pricingNote"><ShieldCheck size={18}/> Free preview download · Full-resolution originals remain private until payment verification.</div></div></section>}
+      {!matched ? <section className="howItWorks"><div className="howIntro"><span className="eyebrow">HOW IT WORKS</span><h2>One selfie. Your gallery.</h2></div><div className="howGrid"><Feature icon={<Search/>} n="01" title="Match your face" copy="Your selfie is compared with faces detected in event photos."/><Feature icon={<Lock/>} n="02" title="Preview securely" copy="Customers receive a clear, downscaled preview that can be downloaded for free; the full-resolution original stays private until verified payment."/><Feature icon={<IndianRupee/>} n="03" title="Buy what you want" copy="₹5 single photo · ₹15 group photo · free preview download · originals unlock after secure payment verification."/></div></section> : <section className="resultsSection"><div className="resultHeader"><div><span className="eyebrow">MATCH RESULTS</span><h2>Your photos <span>· {displayPhotos.length} matches</span></h2></div><div className="resultTrust"><Lock size={14}/> Originals locked</div></div><div className="photoGrid">{displayPhotos.map((p) => <div key={p.id} className={`photoCard ${selected.includes(p.id) ? 'chosen' : ''}`} role="button" tabIndex={0} onClick={() => toggle(p.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(p.id); } }}><img src={p.preview_url} alt="Event preview" crossOrigin="anonymous"/><div className="photoGradient"/><div className="photoBottom"><span>{Number(p.people_count || 1) > 1 ? 'Group' : 'Single'} · {p.people_count || 1} {(p.people_count || 1) === 1 ? 'face' : 'faces'}</span><b>₹{p.price || (Number(p.people_count || 1) > 1 ? 15 : 5)}</b></div>{selected.includes(p.id) && <div className="selectedBadge"><Check size={16}/></div>}<a className="previewLock" href={p.preview_url} download={p.original_filename || 'smf-preview.jpg'} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>DOWNLOAD FREE PREVIEW</a></div>)}</div><div className="pricingRow"><div><b>Single photo</b><span>₹5</span></div><div><b>Group photo</b><span>₹15</span></div><div className="pricingNote"><ShieldCheck size={18}/> Free preview download · Full-resolution originals remain private until payment verification.</div></div></section>}
 
       {selected.length > 0 && <div className="checkoutBar"><div className="checkoutSummary"><b>{selected.length} selected</b><span>Original-quality downloads</span></div><div className="checkoutAction"><strong>₹{total}</strong><button className="primaryButton" onClick={() => setPaymentOpen(true)} disabled={paymentLoading}>{paymentLoading ? <><Loader2 size={17} className="spin"/> Processing…</> : <>Pay securely <ArrowRight size={17}/></>}</button></div></div>}
     </> : null}
