@@ -32,9 +32,14 @@ export async function POST(request) {
       people_count: 1,
       price: 5,
     }));
-    const { data, error } = await supabase.from('fm_photos').upsert(rows, { onConflict: 'event_id,file_hash', ignoreDuplicates: true }).select('id,original_filename,preview_path,people_count,price,processing_status');
+
+    // upload-url already filters duplicates before signed uploads are issued.
+    // Do a normal insert here because the unique file_hash index is partial;
+    // Postgres cannot infer that partial index from ON CONFLICT (event_id,file_hash).
+    const { data, error } = await supabase.from('fm_photos').insert(rows).select('id,original_filename,preview_path,people_count,price,processing_status');
     if (error) throw error;
-    await supabase.rpc('fm_refresh_event_photo_count', { p_event_id: event.id });
+    const { error: refreshError } = await supabase.rpc('fm_refresh_event_photo_count', { p_event_id: event.id });
+    if (refreshError) throw refreshError;
     return NextResponse.json({ ok: true, count: data?.length || 0, photos: data || [] });
   } catch (error) {
     console.error(error);
