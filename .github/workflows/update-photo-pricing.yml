@@ -29,6 +29,7 @@ jobs:
               "Number(p.people_count || 1) > 1 ? 20 : 5": "Number(p.people_count || 1) > 1 ? 15 : 5",
               '<b>Group photo</b><span>₹20</span>': '<b>Group photo</b><span>₹15</span>',
               "const total = useMemo(() => selected.reduce((sum, id) => sum + Number(livePhotos.find((p) => p.id === id)?.price || 0), 0), [selected, livePhotos]);": "const total = useMemo(() => selected.reduce((sum, id) => { const p = livePhotos.find((x) => x.id === id); const people = Number(p?.people_count || 1); return sum + (people > 1 ? 15 : 5); }, 0), [selected, livePhotos]);",
+              "selectedPhotoIds: selected,\n                razorpay_payment_id": "selectedPhotoIds: selected, groupPhotoIds: selected.filter((id) => Number(livePhotos.find((p) => p.id === id)?.people_count || 1) > 1),\n                razorpay_payment_id",
           }
           for old, new in replacements.items():
               s = s.replace(old, new)
