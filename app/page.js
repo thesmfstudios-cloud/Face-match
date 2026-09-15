@@ -29,6 +29,7 @@ export default function Home() {
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentSent, setPaymentSent] = useState(false);
+  const [paymentLoading, setPaymentLoading] = useState(false);
   const [orderId, setOrderId] = useState('');
   const [dataError, setDataError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -232,10 +233,10 @@ export default function Home() {
             });
             const verifyBody = await verifyRes.json();
             if (!verifyRes.ok || !verifyBody.ok) throw new Error(verifyBody.error || 'Payment verification failed.');
-
             const approvedId = verifyBody.order?.id;
             setOrderId(approvedId || '');
             setPaymentSent(true);
+            setMatchMessage('Payment verified. Starting your original downloads…');
             setPaymentLoading(false);
             if (approvedId) await downloadApprovedPhotos(approvedId);
           } catch (error) {
@@ -266,31 +267,6 @@ export default function Home() {
     }
   };
 
-  useEffect(() => {
-    if (!orderId || !paymentSent || downloadStarted) return undefined;
-    let cancelled = false;
-    let timer;
-    const check = async () => {
-      try {
-        const res = await fetch(`/api/orders/${orderId}/status`, { cache: 'no-store' });
-        const body = await res.json();
-        const status = body.order?.status;
-        if (cancelled) return;
-        if (status === 'approved' || status === 'fulfilled') {
-          await downloadApprovedPhotos(orderId);
-          return;
-        }
-        if (status === 'rejected') {
-          setMatchMessage('Payment was not approved. Please contact the event photographer.');
-          return;
-        }
-      } catch {}
-      if (!cancelled) timer = setTimeout(check, 5000);
-    };
-    check();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [orderId, paymentSent, downloadStarted, selected]);
-
   const displayPhotos = matched && photos.length ? photos.filter((p) => !p.no_match) : livePhotos;
   const eventName = event?.name || 'SAM College · 14 September 2026';
   const photoCount = event?.photos_count || photos.length || '1,248';
@@ -318,6 +294,24 @@ export default function Home() {
     {cameraOpen && <CameraModal videoRef={videoRef} onCapture={captureCameraSelfie} onClose={stopCamera}/>} 
     {paymentOpen && <PaymentModal amount={total} onClose={() => setPaymentOpen(false)} onSubmit={submitPayment}/>}<footer className="footer">© 2026 SMF Studio · Face Match Photo Delivery · Secure checkout</footer>
   </main>;
+}
+
+function loadRazorpayScript() {
+  return new Promise((resolve) => {
+    if (typeof window !== 'undefined' && window.Razorpay) return resolve(true);
+    const existing = document.querySelector('script[src="https://checkout.razorpay.com/v1/checkout.js"]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve(true), { once: true });
+      existing.addEventListener('error', () => resolve(false), { once: true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.async = true;
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
 }
 
 function loadRazorpayScript() {
