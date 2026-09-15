@@ -168,9 +168,30 @@ export default function Home() {
           const img = await loadImage(photo.preview_url, true);
           const faces = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.45 }))
             .withFaceLandmarks().withFaceDescriptors();
-          const distances = faces.map((f) => faceapi.euclideanDistance(probe.descriptor, f.descriptor));
-          const best = distances.length ? Math.min(...distances) : 9;
-          if (best < 0.53) return { ...photo, match_distance: best, people_count: Math.max(Number(photo.people_count || 1), faces.length), price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5 };
+          // Strict matching to reduce false positives. A single weak/ambiguous
+          // similarity in a group photo must not make the whole photo a match.
+          const candidates = faces
+            .map((f) => ({
+              descriptor: f.descriptor,
+              detectionScore: Number(f.detection?.score || 0),
+              distance: faceapi.euclideanDistance(probe.descriptor, f.descriptor),
+            }))
+            .filter((f) => f.detectionScore >= 0.60)
+            .sort((a, b) => a.distance - b.distance);
+
+          const bestCandidate = candidates[0];
+          const best = bestCandidate?.distance ?? 9;
+
+          // 0.48 is intentionally stricter than the previous 0.53 threshold.
+          // This prioritizes precision over recall for paid photo delivery.
+          if (best < 0.48) {
+            return {
+              ...photo,
+              match_distance: best,
+              people_count: Math.max(Number(photo.people_count || 1), faces.length),
+              price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5,
+            };
+          }
         } catch (err) {
           console.warn('Could not scan photo', photo.id, err);
         }
