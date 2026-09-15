@@ -16,6 +16,66 @@ function bytesFromObject(object) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+async function listAll(supabase, bucket, prefix) {
+  const all = [];
+  for (let offset = 0; ; offset += 1000) {
+    const { data, error } = await supabase.storage.from(bucket).list(prefix, {
+      limit: 1000,
+      offset,
+      sortBy: { column: 'name', order: 'asc' },
+    });
+    if (error) throw error;
+    all.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return all;
+}
+
+async function reconcileStorage(supabase, eventId, originals, previews) {
+  const prefix = eventId;
+  const previewSet = new Set((previews || []).map((object) => object?.name).filter(Boolean));
+  const { data: existing, error: existingError } = await supabase.from('fm_photos').select('original_path').eq('event_id', eventId);
+  if (existingError) throw existingError;
+  const existingSet = new Set((existing || []).map((row) => row.original_path));
+  const rows = [];
+
+  for (const object of originals || []) {
+    const name = String(object?.name || '');
+    if (!name || name.length < 38) continue;
+    const originalPath = `${prefix}/${name}`;
+    if (existingSet.has(originalPath)) continue;
+
+    const uuidPart = name.slice(0, 36);
+    const previewName = `${uuidPart}-preview.jpg`;
+    const previewPath = previewSet.has(previewName) ? `${prefix}/${previewName}` : null;
+    const filename = name.slice(37) || name;
+
+    rows.push({
+      event_id: eventId,
+      original_path: originalPath,
+      preview_path: previewPath,
+      original_filename: filename,
+      people_count: 1,
+      price: 5,
+      processing_status: previewPath ? 'ready' : 'failed',
+    });
+  }
+
+  let inserted = 0;
+  if (rows.length) {
+    const { data, error } = await supabase.from('fm_photos').insert(rows).select('id');
+    if (error) throw error;
+    inserted = data?.length || 0;
+  }
+
+  if (inserted || existingSet.size !== originals.length) {
+    const { error: refreshError } = await supabase.rpc('fm_refresh_event_photo_count', { p_event_id: eventId });
+    if (refreshError) console.error(refreshError);
+  }
+
+  return inserted;
+}
+
 export async function GET(request) {
   try {
     if (!auth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -34,23 +94,20 @@ export async function GET(request) {
       .single();
     if (eventError || !event) return NextResponse.json({ error: 'Event not found.' }, { status: 400 });
 
+    const originalPrefix = `${event.id}`;
+    const [originals, previews] = await Promise.all([
+      listAll(supabase, 'fm-originals', originalPrefix),
+      listAll(supabase, 'fm-previews', originalPrefix),
+    ]);
+
+    await reconcileStorage(supabase, event.id, originals, previews);
+
     const { data: photos, error: photoError } = await supabase
       .from('fm_photos')
       .select('id,original_path,preview_path,original_filename,people_count,price,processing_status,created_at')
       .eq('event_id', event.id)
       .order('created_at', { ascending: true });
     if (photoError) throw photoError;
-
-    const originalPrefix = `${event.id}`;
-    const { data: originals, error: originalListError } = await supabase.storage
-      .from('fm-originals')
-      .list(originalPrefix, { limit: 1000, sortBy: { column: 'name', order: 'asc' } });
-    if (originalListError) throw originalListError;
-
-    const { data: previews, error: previewListError } = await supabase.storage
-      .from('fm-previews')
-      .list(originalPrefix, { limit: 1000, sortBy: { column: 'name', order: 'asc' } });
-    if (previewListError) throw previewListError;
 
     const originalBytes = (originals || []).reduce((sum, object) => sum + bytesFromObject(object), 0);
     const previewBytes = (previews || []).reduce((sum, object) => sum + bytesFromObject(object), 0);
@@ -69,7 +126,7 @@ export async function GET(request) {
 
     return NextResponse.json({
       ok: true,
-      event,
+      event: { ...event, photos_count: mapped.length },
       photos: mapped,
       storage: {
         originals: { count: originals?.length || 0, bytes: originalBytes },
