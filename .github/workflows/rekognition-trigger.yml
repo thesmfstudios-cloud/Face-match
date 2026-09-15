@@ -1,0 +1,8 @@
+name: Trigger Rekognition migration
+on:
+  workflow_dispatch:
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Run switch-to-amazon-rekognition manually if needed"
