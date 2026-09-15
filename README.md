@@ -19,3 +19,4 @@ AI-style event photo delivery MVP for SMF Studio.
 - Admin payment approvals
 
 Deployment trigger: 2026-09-15 admin uploader deployment fix.
+Vercel production connection verified for this repository.
