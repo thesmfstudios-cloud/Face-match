@@ -238,6 +238,7 @@ export default function Home() {
       if (!createBody.key_id) throw new Error('Razorpay key configuration is missing.');
       const options = {
         key: createBody.key_id,
+        one_click_checkout: false,
         amount: createBody.amount, currency: createBody.currency,
         name: 'SMF Studios',
         description: `${selected.length} event photo${selected.length === 1 ? '' : 's'}`,
