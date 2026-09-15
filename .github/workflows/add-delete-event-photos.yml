@@ -1,0 +1,105 @@
+name: Add delete all event photos control
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-admin-delete:
+    if: "!contains(github.event.head_commit.message, '[delete-event-photos-done]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Patch admin page
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/admin/page.js')
+          s = p.read_text()
+
+          s = s.replace(
+              "import { ArrowRight, CheckCircle2, FolderOpen, HardDrive, ImagePlus, Lock, Loader2, RefreshCw, Upload } from 'lucide-react';",
+              "import { ArrowRight, CheckCircle2, FolderOpen, HardDrive, ImagePlus, Lock, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react';",
+              1,
+          )
+          s = s.replace(
+              "  const [loadingLibrary, setLoadingLibrary] = useState(false);\n",
+              "  const [loadingLibrary, setLoadingLibrary] = useState(false);\n  const [deletingAll, setDeletingAll] = useState(false);\n",
+              1,
+          )
+
+          marker = "  const upload = async () => {\n"
+          helper = '''  const deleteAllPhotos = async () => {
+    if (!code || deletingAll) return;
+    const confirmed = window.confirm('Delete all event photos?\n\nThis permanently removes all originals, previews, and database photo records for this event. This cannot be undone.');
+    if (!confirmed) return;
+    setDeletingAll(true);
+    try {
+      const res = await fetch('/api/admin/delete-event-photos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
+        body: JSON.stringify({ eventSlug: EVENT_SLUG, confirm: true }),
+      });
+      const text = await res.text();
+      let body;
+      try { body = JSON.parse(text); } catch { throw new Error(text.slice(0, 180) || `Delete error (${res.status})`); }
+      if (!res.ok) throw new Error(body.error || 'Could not delete event photos.');
+      setLibrary(null);
+      setStatus(`✓ Deleted ${body.deleted?.originals || 0} originals and ${body.deleted?.previews || 0} previews. Event photo library is now empty.`);
+    } catch (error) {
+      setStatus(`Delete failed: ${error?.message || 'Unknown error'}`);
+    } finally {
+      setDeletingAll(false);
+    }
+  };
+
+'''
+          if 'const deleteAllPhotos = async () =>' not in s:
+              s = s.replace(marker, helper + marker, 1)
+
+          old = "          <button disabled={!code || loadingLibrary} onClick={loadLibrary} style={{ background: '#252522', color: '#ddd9d0', border: '1px solid #44433f', borderRadius: 8, padding: '9px 12px', fontSize: 10, display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', opacity: !code || loadingLibrary ? .5 : 1 }}>{loadingLibrary ? <Loader2 size={15} className=\"spin\"/> : <RefreshCw size={15}/>} Refresh library</button>"
+          new = old + "          <button disabled={!code || loadingLibrary || deletingAll || !library?.photos?.length} onClick={deleteAllPhotos} style={{ background: '#2b1715', color: '#ffb9b2', border: '1px solid #71312b', borderRadius: 8, padding: '9px 12px', fontSize: 10, display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', opacity: !code || loadingLibrary || deletingAll || !library?.photos?.length ? .45 : 1 }}>{deletingAll ? <Loader2 size={15} className=\"spin\"/> : <Trash2 size={15}/>} Delete all photos</button>"
+          if 'Delete all photos' not in s:
+              s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/admin/page.js
+          if git diff --cached --quiet; then
+            echo "No admin delete control changes needed."
+            exit 0
+          fi
+          git commit -m "Add admin delete all photos control [delete-event-photos-done]"
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort; git reset --hard origin/main; }
+            git cherry-pick HEAD@{1} 2>/dev/null || true
+            if git push origin main; then exit 0; fi
+            git reset --hard origin/main
+            git apply <(git show --format= --binary HEAD@{1}) 2>/dev/null || true
+          done
+          echo "Could not push patch after retries."
+          exit 1
+
+      - name: Remove one-time workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f .github/workflows/add-delete-event-photos.yml || true
+          git commit -m "Remove one-time delete control workflow [delete-event-photos-done]" || true
+          git push origin main || true
