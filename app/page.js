@@ -138,83 +138,63 @@ export default function Home() {
   };
 
   const runFaceMatch = async () => {
-    if (!selfie) return;
+    if (!selfie || matching) return;
     await requestScanNotification();
     if (!photos.length) {
       setMatched(true);
       setMatchMessage('Demo mode is active. Supabase live photos will be matched after connection.');
       return;
     }
+
     setMatching(true);
-    setMatchMessage(`Scanning your photos… 0/${photos.length} scanned.`);
+    setMatched(false);
+    setSelected([]);
+    setMatchMessage('Finding your photos with AI…');
+
     try {
-      const faceapi = await import('@vladmandic/face-api');
-      await Promise.all([
-        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
-      ]);
+      const form = new FormData();
+      form.append('eventSlug', EVENT_SLUG);
+      form.append('selfie', selfie);
 
-      const selfieUrl = URL.createObjectURL(selfie);
-      const selfieImg = await loadImage(selfieUrl);
-      URL.revokeObjectURL(selfieUrl);
-      const probe = await faceapi.detectSingleFace(selfieImg, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
-        .withFaceLandmarks().withFaceDescriptor();
-      if (!probe) throw new Error('No clear face found in the selfie. Use a front-facing, well-lit selfie.');
+      const response = await fetch('/api/face-match', {
+        method: 'POST',
+        body: form,
+        cache: 'no-store',
+      });
 
-      const results = [];
-      const scanPhoto = async (photo) => {
-        try {
-          const img = await loadImage(photo.preview_url, true);
-          const faces = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.45 }))
-            .withFaceLandmarks().withFaceDescriptors();
-          // Strict matching to reduce false positives. A single weak/ambiguous
-          // similarity in a group photo must not make the whole photo a match.
-          const candidates = faces
-            .map((f) => ({
-              descriptor: f.descriptor,
-              detectionScore: Number(f.detection?.score || 0),
-              distance: faceapi.euclideanDistance(probe.descriptor, f.descriptor),
-            }))
-            .filter((f) => f.detectionScore >= 0.60)
-            .sort((a, b) => a.distance - b.distance);
-
-          const bestCandidate = candidates[0];
-          const best = bestCandidate?.distance ?? 9;
-
-          // 0.48 is intentionally stricter than the previous 0.53 threshold.
-          // This prioritizes precision over recall for paid photo delivery.
-          if (best < 0.48) {
-            return {
-              ...photo,
-              match_distance: best,
-              people_count: Math.max(Number(photo.people_count || 1), faces.length),
-              price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5,
-            };
-          }
-        } catch (err) {
-          console.warn('Could not scan photo', photo.id, err);
-        }
-        return null;
-      };
-
-      for (let offset = 0; offset < photos.length; offset += SCAN_BATCH_SIZE) {
-        const batch = photos.slice(offset, offset + SCAN_BATCH_SIZE);
-        setMatchMessage(`Scanning your photos… ${Math.min(offset + batch.length, photos.length)}/${photos.length} scanned.`);
-        const batchResults = await Promise.all(batch.map(scanPhoto));
-        for (const result of batchResults) if (result) results.push(result);
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.ok) {
+        throw new Error(body.error || 'Face matching failed.');
       }
+
+      const matchMap = new Map(
+        (Array.isArray(body.matches) ? body.matches : []).map((match) => [String(match.photoId), Number(match.similarity || 0)])
+      );
+
+      const results = photos
+        .filter((photo) => matchMap.has(String(photo.id)))
+        .map((photo) => ({
+          ...photo,
+          match_similarity: matchMap.get(String(photo.id)),
+          no_match: false,
+        }));
+
       setMatched(true);
       setMatching(false);
-      setMatchMessage(results.length ? `${results.length} matching photos found.` : 'No close face matches found. Try a clearer selfie or better lighting.');
+      setMatchMessage(results.length
+        ? `${results.length} matching photos found.`
+        : 'No close face matches found. Try a clearer selfie or better lighting.');
       notifyScanComplete(results.length);
-      setPhotos((current) => {
-        const map = new Map(results.map((r) => [r.id, r]));
-        return current.map((p) => map.get(p.id) || { ...p, no_match: true });
-      });
-    } catch (err) {
+
+      const resultIds = new Set(results.map((r) => r.id));
+      setPhotos((current) => current.map((photo) => (
+        resultIds.has(photo.id)
+          ? { ...photo, no_match: false, match_similarity: matchMap.get(String(photo.id)) }
+          : { ...photo, no_match: true }
+      )));
+    } catch (error) {
       setMatching(false);
-      setMatchMessage(err?.message || 'Face matching failed.');
+      setMatchMessage(error?.message || 'Face matching failed.');
     }
   };
 
