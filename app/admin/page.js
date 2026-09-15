@@ -6,7 +6,8 @@ import { getSupabaseBrowser } from '../../lib/supabase-browser';
 
 const EVENT_SLUG = 'sam-college-2026';
 const MAX_BATCH = 500;
-const REQUEST_CHUNK = 25;
+// The server safely issues signed upload URLs in groups of 20; users can still select 500 at once.
+const REQUEST_CHUNK = 20;
 
 export default function AdminUploadPage() {
   const inputRef = useRef(null);
@@ -33,6 +34,9 @@ export default function AdminUploadPage() {
         let urlBody;
         try { urlBody = JSON.parse(urlText); } catch { throw new Error(urlText.slice(0, 180) || `Server error (${urlRes.status})`); }
         if (!urlRes.ok) throw new Error(urlBody.error || 'Could not prepare upload.');
+        if (!Array.isArray(urlBody.uploads) || urlBody.uploads.length !== chunk.length) {
+          throw new Error(`Upload preparation returned ${urlBody.uploads?.length || 0} of ${chunk.length} signed uploads.`);
+        }
 
         const supabase = getSupabaseBrowser();
         for (let i = 0; i < chunk.length; i++) {
