@@ -1,0 +1,11 @@
+name: Rekognition migration status
+on:
+  push:
+    paths:
+      - '.github/workflows/rekognition-fix.yml'
+  workflow_dispatch:
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Rekognition server APIs are present; customer matcher migration workflow may need to finish before final deployment."
