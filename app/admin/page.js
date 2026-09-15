@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { ArrowRight, CheckCircle2, FolderOpen, HardDrive, ImagePlus, Lock, Loader2, RefreshCw, Upload } from 'lucide-react';
+import { ArrowRight, CheckCircle2, FolderOpen, HardDrive, ImagePlus, Lock, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react';
 import { getSupabaseBrowser } from '../../lib/supabase-browser';
 
 const EVENT_SLUG = 'sam-college-2026';
@@ -16,6 +16,7 @@ export default function AdminUploadPage() {
   const [busy, setBusy] = useState(false);
   const [library, setLibrary] = useState(null);
   const [loadingLibrary, setLoadingLibrary] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
 
   const loadLibrary = async () => {
     if (!code || loadingLibrary) return;
@@ -34,6 +35,30 @@ export default function AdminUploadPage() {
       setStatus(`Library failed: ${error?.message || 'Unknown error'}`);
     } finally {
       setLoadingLibrary(false);
+    }
+  };
+
+  const deleteAllPhotos = async () => {
+    if (!code || deletingAll) return;
+    const confirmed = window.confirm('Delete all event photos?\n\nThis permanently removes all originals, previews, and database photo records for this event. This cannot be undone.');
+    if (!confirmed) return;
+    setDeletingAll(true);
+    try {
+      const res = await fetch('/api/admin/delete-event-photos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
+        body: JSON.stringify({ eventSlug: EVENT_SLUG, confirm: true }),
+      });
+      const text = await res.text();
+      let body;
+      try { body = JSON.parse(text); } catch { throw new Error(text.slice(0, 180) || `Delete error (${res.status})`); }
+      if (!res.ok) throw new Error(body.error || 'Could not delete event photos.');
+      setLibrary(null);
+      setStatus(`✓ Deleted ${body.deleted?.originals || 0} originals and ${body.deleted?.previews || 0} previews. Event photo library is now empty.`);
+    } catch (error) {
+      setStatus(`Delete failed: ${error?.message || 'Unknown error'}`);
+    } finally {
+      setDeletingAll(false);
     }
   };
 
@@ -152,7 +177,7 @@ export default function AdminUploadPage() {
           <div style={{ marginTop: 12, color: '#aaa69d', fontSize: 12 }}>{files.length ? `${files.length} files selected${files.length >= MAX_BATCH ? ' (maximum)' : ''}` : 'Select up to 500 photos per batch'}</div>
         </div>
         {files.length > 0 && <button disabled={!code || busy} onClick={upload} style={{ marginTop: 16, width: '100%', background: '#f3f1eb', color: '#111', border: 0, borderRadius: 10, padding: 14, fontWeight: 800, cursor: busy ? 'wait' : 'pointer', opacity: !code || busy ? .45 : 1 }}>{busy ? <><Loader2 size={17} className="spin"/> Working…</> : <>Upload {Math.min(files.length, MAX_BATCH)} photos <ArrowRight size={17}/></>}</button>}
-        {status && <div style={{ marginTop: 15, fontSize: 12, color: status.startsWith('Upload failed') || status.startsWith('Library failed') ? '#ffaaa5' : '#a9e4b4', display: 'flex', gap: 7, alignItems: 'flex-start' }}>{!(status.startsWith('Upload failed') || status.startsWith('Library failed')) && <CheckCircle2 size={16}/>} <span>{status}</span></div>}
+        {status && <div style={{ marginTop: 15, fontSize: 12, color: status.startsWith('Upload failed') || status.startsWith('Library failed') || status.startsWith('Delete failed') ? '#ffaaa5' : '#a9e4b4', display: 'flex', gap: 7, alignItems: 'flex-start' }}>{!(status.startsWith('Upload failed') || status.startsWith('Library failed') || status.startsWith('Delete failed')) && <CheckCircle2 size={16}/>} <span>{status}</span></div>}
       </div>
 
       <section style={{ marginTop: 18, background: '#151513', border: '1px solid #393936', borderRadius: 18, padding: 24 }}>
@@ -161,7 +186,10 @@ export default function AdminUploadPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 800, fontSize: 15 }}><FolderOpen size={17}/> Photo library</div>
             <p style={{ margin: '7px 0 0', color: '#969289', fontSize: 11, lineHeight: 1.55 }}>All uploaded photos for this event, shown as clear previews. Originals remain private and are never exposed to customers.</p>
           </div>
-          <button disabled={!code || loadingLibrary} onClick={loadLibrary} style={{ background: '#252522', color: '#ddd9d0', border: '1px solid #44433f', borderRadius: 8, padding: '9px 12px', fontSize: 10, display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', opacity: !code || loadingLibrary ? .5 : 1 }}>{loadingLibrary ? <Loader2 size={15} className="spin"/> : <RefreshCw size={15}/>} Refresh library</button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button disabled={!code || loadingLibrary} onClick={loadLibrary} style={{ background: '#252522', color: '#ddd9d0', border: '1px solid #44433f', borderRadius: 8, padding: '9px 12px', fontSize: 10, display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer', opacity: !code || loadingLibrary ? .5 : 1 }}>{loadingLibrary ? <Loader2 size={15} className="spin"/> : <RefreshCw size={15}/>} Refresh library</button>
+            <button disabled={!code || loadingLibrary || deletingAll || !library?.photos?.length} onClick={deleteAllPhotos} style={{ background: '#2b1715', color: '#ffb9b2', border: '1px solid #71312b', borderRadius: 8, padding: '9px 12px', fontSize: 10, display: 'flex', alignItems: 'center', gap: 7, cursor: deletingAll ? 'wait' : 'pointer', opacity: !code || loadingLibrary || deletingAll || !library?.photos?.length ? .45 : 1 }}>{deletingAll ? <Loader2 size={15} className="spin"/> : <Trash2 size={15}/>} Delete all photos</button>
+          </div>
         </div>
 
         {!library ? <div style={{ padding: '30px 0', textAlign: 'center', color: '#78756e', fontSize: 10 }}>Enter the admin access code to load the photo folder, previews, and storage usage.</div> : <>
