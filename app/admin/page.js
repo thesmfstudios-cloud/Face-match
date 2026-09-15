@@ -6,7 +6,7 @@ import { getSupabaseBrowser } from '../../lib/supabase-browser';
 
 const EVENT_SLUG = 'sam-college-2026';
 const MAX_BATCH = 500;
-// The server safely issues signed upload URLs in groups of 20; users can still select 500 at once.
+// Server issues signed upload URLs in groups of 20; the UI can still select 500 at once.
 const REQUEST_CHUNK = 20;
 
 export default function AdminUploadPage() {
@@ -21,49 +21,76 @@ export default function AdminUploadPage() {
     setBusy(true);
     const selected = files.slice(0, MAX_BATCH);
     const uploaded = [];
+    let skippedCount = 0;
     try {
-      for (let offset = 0; offset < selected.length; offset += REQUEST_CHUNK) {
-        const chunk = selected.slice(offset, offset + REQUEST_CHUNK);
-        setStatus(`Preparing photos ${offset + 1}-${Math.min(offset + REQUEST_CHUNK, selected.length)} of ${selected.length}…`);
+      setStatus(`Checking ${selected.length} photos for duplicates…`);
+      const prepared = [];
+      for (let i = 0; i < selected.length; i++) {
+        const file = selected[i];
+        setStatus(`Checking ${i + 1}/${selected.length}: ${file.name}`);
+        prepared.push({ file, hash: await sha256(file) });
+      }
+
+      // Remove exact duplicate files from the same selection before contacting the server.
+      const seen = new Set();
+      const uniquePrepared = [];
+      for (const item of prepared) {
+        if (seen.has(item.hash)) {
+          skippedCount += 1;
+          continue;
+        }
+        seen.add(item.hash);
+        uniquePrepared.push(item);
+      }
+
+      for (let offset = 0; offset < uniquePrepared.length; offset += REQUEST_CHUNK) {
+        const chunk = uniquePrepared.slice(offset, offset + REQUEST_CHUNK);
+        setStatus(`Preparing photos ${offset + 1}-${Math.min(offset + REQUEST_CHUNK, uniquePrepared.length)} of ${uniquePrepared.length}…`);
         const urlRes = await fetch('/api/admin/upload-url', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
-          body: JSON.stringify({ eventSlug: EVENT_SLUG, files: chunk.map((f) => ({ name: f.name, type: f.type, size: f.size })) }),
+          body: JSON.stringify({
+            eventSlug: EVENT_SLUG,
+            files: chunk.map((item, index) => ({ name: item.file.name, type: item.file.type, size: item.file.size, hash: item.hash, index })),
+          }),
         });
         const urlText = await urlRes.text();
         let urlBody;
         try { urlBody = JSON.parse(urlText); } catch { throw new Error(urlText.slice(0, 180) || `Server error (${urlRes.status})`); }
         if (!urlRes.ok) throw new Error(urlBody.error || 'Could not prepare upload.');
-        if (!Array.isArray(urlBody.uploads) || urlBody.uploads.length !== chunk.length) {
-          throw new Error(`Upload preparation returned ${urlBody.uploads?.length || 0} of ${chunk.length} signed uploads.`);
-        }
+        if (!Array.isArray(urlBody.uploads)) throw new Error('Upload preparation returned an invalid response.');
+        skippedCount += Array.isArray(urlBody.skipped) ? urlBody.skipped.length : 0;
 
         const supabase = getSupabaseBrowser();
-        for (let i = 0; i < chunk.length; i++) {
-          const file = chunk[i];
-          const u = urlBody.uploads[i];
-          const overallIndex = offset + i + 1;
-          setStatus(`Uploading ${overallIndex}/${selected.length}: ${file.name}`);
-          const original = await supabase.storage.from('fm-originals').uploadToSignedUrl(u.originalPath, u.originalToken, file, { contentType: file.type || 'image/jpeg' });
+        for (const u of urlBody.uploads) {
+          const item = chunk[u.index];
+          if (!item) throw new Error('Upload preparation returned an invalid file index.');
+          const overallIndex = offset + u.index + 1;
+          setStatus(`Uploading ${overallIndex}/${uniquePrepared.length}: ${item.file.name}`);
+          const original = await supabase.storage.from('fm-originals').uploadToSignedUrl(u.originalPath, u.originalToken, item.file, { contentType: item.file.type || 'image/jpeg' });
           if (original.error) throw original.error;
-          const previewFile = await makePreview(file);
+          const previewFile = await makePreview(item.file);
           const preview = await supabase.storage.from('fm-previews').uploadToSignedUrl(u.previewPath, u.previewToken, previewFile, { contentType: 'image/jpeg' });
           if (preview.error) throw preview.error;
-          uploaded.push({ name: u.name, originalPath: u.originalPath, previewPath: u.previewPath });
+          uploaded.push({ name: u.name, fileHash: u.fileHash || item.hash, originalPath: u.originalPath, previewPath: u.previewPath });
         }
       }
 
-      setStatus(`Finalizing ${uploaded.length} photos…`);
-      const finalRes = await fetch('/api/admin/upload-finalize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
-        body: JSON.stringify({ eventSlug: EVENT_SLUG, uploads: uploaded }),
-      });
-      const finalText = await finalRes.text();
-      let finalBody;
-      try { finalBody = JSON.parse(finalText); } catch { throw new Error(finalText.slice(0, 180) || `Finalize error (${finalRes.status})`); }
-      if (!finalRes.ok) throw new Error(finalBody.error || 'Could not finalize upload.');
-      setStatus(`✓ ${finalBody.count} photos uploaded successfully.`);
+      if (!uploaded.length) {
+        setStatus(`✓ No new photos uploaded. ${skippedCount} duplicate photo${skippedCount === 1 ? '' : 's'} skipped automatically.`);
+      } else {
+        setStatus(`Finalizing ${uploaded.length} new photos…`);
+        const finalRes = await fetch('/api/admin/upload-finalize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
+          body: JSON.stringify({ eventSlug: EVENT_SLUG, uploads: uploaded }),
+        });
+        const finalText = await finalRes.text();
+        let finalBody;
+        try { finalBody = JSON.parse(finalText); } catch { throw new Error(finalText.slice(0, 180) || `Finalize error (${finalRes.status})`); }
+        if (!finalRes.ok) throw new Error(finalBody.error || 'Could not finalize upload.');
+        setStatus(`✓ ${finalBody.count} new photos uploaded. ${skippedCount ? `${skippedCount} duplicate${skippedCount === 1 ? '' : 's'} skipped automatically.` : ''}`.trim());
+      }
       setFiles([]);
       if (inputRef.current) inputRef.current.value = '';
     } catch (error) {
@@ -81,7 +108,7 @@ export default function AdminUploadPage() {
     <section style={{ maxWidth: 1000, margin: '0 auto', padding: '70px 24px' }}>
       <div style={{ color: '#89857d', fontSize: 11, fontWeight: 700, letterSpacing: '.15em' }}>SAM COLLEGE · PHOTO DELIVERY</div>
       <h1 style={{ fontSize: 'clamp(42px,6vw,68px)', letterSpacing: '-.06em', margin: '10px 0 12px' }}>Upload event originals.</h1>
-      <p style={{ maxWidth: 650, color: '#777', lineHeight: 1.6 }}>Large files upload directly to Supabase Storage. Select up to 500 photos in one batch; uploads are prepared in small chunks for reliability, and a clear low-resolution preview is generated in your browser for face matching.</p>
+      <p style={{ maxWidth: 650, color: '#777', lineHeight: 1.6 }}>Large files upload directly to Supabase Storage. Select up to 500 photos in one batch; exact duplicate photos are skipped automatically, uploads are prepared in small chunks for reliability, and a clear low-resolution preview is generated in your browser for face matching.</p>
       <div style={{ marginTop: 30, background: '#171717', color: '#fff', borderRadius: 20, padding: 24 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#242424', borderRadius: 10, padding: '12px 14px' }}><Lock size={16}/><input type="password" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Admin access code" style={{ flex: 1, background: 'transparent', color: '#fff', border: 0, outline: 0 }} /></label>
         <div style={{ marginTop: 18, border: '1px dashed #555', borderRadius: 15, padding: 28, textAlign: 'center' }}>
@@ -90,11 +117,17 @@ export default function AdminUploadPage() {
           <button onClick={() => inputRef.current?.click()} style={{ background: '#fff', color: '#111', border: 0, borderRadius: 9, padding: '11px 15px', fontWeight: 700, cursor: 'pointer' }}><Upload size={16} style={{ verticalAlign: '-3px', marginRight: 7 }}/> Choose photos</button>
           <div style={{ marginTop: 12, color: '#aaa', fontSize: 12 }}>{files.length ? `${files.length} files selected${files.length >= MAX_BATCH ? ' (maximum)' : ''}` : 'Select up to 500 photos per batch'}</div>
         </div>
-        {files.length > 0 && <button disabled={!code || busy} onClick={upload} style={{ marginTop: 16, width: '100%', background: '#fff', color: '#111', border: 0, borderRadius: 10, padding: 14, fontWeight: 800, cursor: busy ? 'wait' : 'pointer', opacity: !code || busy ? .45 : 1 }}>{busy ? <><Loader2 size={17} className="spin"/> Uploading…</> : <>Upload {Math.min(files.length, MAX_BATCH)} photos <ArrowRight size={17}/></>}</button>}
+        {files.length > 0 && <button disabled={!code || busy} onClick={upload} style={{ marginTop: 16, width: '100%', background: '#fff', color: '#111', border: 0, borderRadius: 10, padding: 14, fontWeight: 800, cursor: busy ? 'wait' : 'pointer', opacity: !code || busy ? .45 : 1 }}>{busy ? <><Loader2 size={17} className="spin"/> Working…</> : <>Upload {Math.min(files.length, MAX_BATCH)} photos <ArrowRight size={17}/></>}</button>}
         {status && <div style={{ marginTop: 15, fontSize: 12, color: status.startsWith('Upload failed') ? '#ff9d9d' : '#a9e4b4', display: 'flex', gap: 7, alignItems: 'center' }}>{!status.startsWith('Upload failed') && <CheckCircle2 size={16}/>} {status}</div>}
       </div>
     </section>
   </main>;
+}
+
+async function sha256(file) {
+  const buffer = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function makePreview(file) {
