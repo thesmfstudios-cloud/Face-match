@@ -13,14 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Patch photo pricing and preview behavior
+      - name: Patch pricing and preview behavior
+        shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           page = Path('app/page.js')
           s = page.read_text()
-
           replacements = [
             ("price: 10, preview_url", "price: 5, preview_url"),
             ("price: 30, preview_url", "price: 20, preview_url"),
@@ -29,33 +30,31 @@ jobs:
             ("₹10 single photo · ₹30 group photo · originals unlock after approval.", "₹5 single photo · ₹20 group photo · free preview download · originals unlock after approval."),
             ("Customers only receive a downscaled preview, never the original.", "Customers receive a clear, downscaled preview that can be downloaded for free; the full-resolution original stays private."),
             ("<div className=\"blurLayer\"/><div className=\"watermark\">SMF STUDIO</div>", ""),
-            ("<div className=\"previewLock\"><Lock size={13}/> PREVIEW</div>", "<a className=\"previewLock\" href={p.preview_url} download={p.original_filename || 'smf-preview.jpg'} target=\"_blank\" rel=\"noreferrer\" onClick={(e) => e.stopPropagation()}>DOWNLOAD FREE PREVIEW</a>"),
             ("<b>₹{p.price || 10}</b>", "<b>₹{p.price || (Number(p.people_count || 1) > 1 ? 20 : 5)}</b>"),
             ("<div><b>Single photo</b><span>₹10</span></div><div><b>Group photo</b><span>₹30</span></div>", "<div><b>Single photo</b><span>₹5</span></div><div><b>Group photo</b><span>₹20</span></div>"),
             ("<div className=\"pricingNote\"><ShieldCheck size={18}/> Full-resolution originals remain private.</div>", "<div className=\"pricingNote\"><ShieldCheck size={18}/> Free preview download · Full-resolution originals remain private until payment approval.</div>"),
+            ("<div className=\"previewLock\"><Lock size={13}/> PREVIEW</div>", "<a className=\"previewLock\" href={p.preview_url} download={p.original_filename || 'smf-preview.jpg'} target=\"_blank\" rel=\"noreferrer\" onClick={(e) => e.stopPropagation()}>DOWNLOAD FREE PREVIEW</a>"),
           ]
           for old, new in replacements:
               if old not in s:
-                  raise SystemExit(f'Missing expected text in app/page.js: {old[:80]}')
-              s = s.replace(old, new, 1) if old.startswith('<b>') else s.replace(old, new)
+                  raise SystemExit(f'Missing expected page text: {old[:100]}')
+              s = s.replace(old, new)
 
-          # Replace the result card wrapper so the card can contain a real preview-download link.
-          old = '<button key={p.id} className={`photoCard ${selected.includes(p.id) ? \'chosen\' : \'\'}`} onClick={() => toggle(p.id)}>'
-          new = '<div key={p.id} className={`photoCard ${selected.includes(p.id) ? \'chosen\' : \'\'}`} role="button" tabIndex={0} onClick={() => toggle(p.id)} onKeyDown={(e) => { if (e.key === \'Enter\' || e.key === \' \') { e.preventDefault(); toggle(p.id); } }}>'
-          if old not in s:
+          old_wrap = '<button key={p.id} className={`photoCard ${selected.includes(p.id) ? \'chosen\' : \'\'}`} onClick={() => toggle(p.id)}>'
+          new_wrap = '<div key={p.id} className={`photoCard ${selected.includes(p.id) ? \'chosen\' : \'\'}`} role="button" tabIndex={0} onClick={() => toggle(p.id)} onKeyDown={(e) => { if (e.key === \'Enter\' || e.key === \' \') { e.preventDefault(); toggle(p.id); } }}>'
+          if old_wrap not in s:
               raise SystemExit('Missing photo card wrapper')
-          s = s.replace(old, new, 1)
-          s = s.replace('</button>)}</div><div className="pricingRow">', '</div>)}</div><div className="pricingRow">', 1)
-
+          s = s.replace(old_wrap, new_wrap, 1)
+          close_marker = '</button>)}</div><div className="pricingRow">'
+          if close_marker not in s:
+              raise SystemExit('Missing photo card closing marker')
+          s = s.replace(close_marker, '</div>)}</div><div className="pricingRow">', 1)
           page.write_text(s)
 
-          # Patch admin preview generation to produce a substantially smaller, clear JPEG.
           admin = Path('app/admin/page.js')
           a = admin.read_text()
-          start = a.index('function makePreview(file) {')
-          end = a.index('\n}', start) + 2
-          old_fn = a[start:end]
-          new_fn = r'''function makePreview(file) {
+          pattern = r'function makePreview\(file\) \{.*\}\s*$'
+          new_fn = '''function makePreview(file) {
             return new Promise((resolve, reject) => {
               const url = URL.createObjectURL(file);
               const img = new Image();
@@ -68,26 +67,23 @@ jobs:
                 let blob = null;
 
                 try {
-                  for (let attempt = 0; attempt < 10; attempt++) {
+                  for (let attempt = 0; attempt < 12; attempt++) {
                     const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
                     const canvas = document.createElement('canvas');
                     canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
                     canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
                     const ctx = canvas.getContext('2d', { alpha: false });
                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
                     blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', quality));
                     if (!blob) throw new Error('Could not create preview.');
-                    if (blob.size <= TARGET_BYTES || blob.size <= MAX_BYTES && quality <= 0.62) break;
-
+                    if (blob.size <= TARGET_BYTES) break;
                     if (blob.size > MAX_BYTES) {
-                      quality = Math.max(0.52, quality - 0.07);
-                      if (quality <= 0.56) max = Math.max(900, Math.round(max * 0.88));
+                      quality = Math.max(0.50, quality - 0.07);
+                      if (quality <= 0.57) max = Math.max(900, Math.round(max * 0.88));
                     } else {
                       break;
                     }
                   }
-
                   resolve(blob);
                 } catch (error) {
                   reject(error);
@@ -97,8 +93,10 @@ jobs:
               img.src = url;
             });
           }'''
-          a = a.replace(old_fn, new_fn, 1)
-          admin.write_text(a)
+          a2, count = re.subn(pattern, new_fn, a, flags=re.S)
+          if count != 1:
+              raise SystemExit(f'Expected one makePreview function, found {count}')
+          admin.write_text(a2)
           PY
 
       - name: Commit patched files
