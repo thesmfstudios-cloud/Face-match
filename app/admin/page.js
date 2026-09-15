@@ -91,16 +91,33 @@ function makePreview(file) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
       URL.revokeObjectURL(url);
-      const max = 1000;
-      const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
-      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Could not create preview.')), 'image/jpeg', 0.72);
+      const MAX_BYTES = 800 * 1024;
+      const TARGET_BYTES = 650 * 1024;
+      let max = 1400;
+      let quality = 0.84;
+      let blob = null;
+      try {
+        for (let attempt = 0; attempt < 12; attempt++) {
+          const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+          canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+          const ctx = canvas.getContext('2d', { alpha: false });
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', quality));
+          if (!blob) throw new Error('Could not create preview.');
+          if (blob.size <= TARGET_BYTES) break;
+          if (blob.size > MAX_BYTES) {
+            quality = Math.max(0.50, quality - 0.07);
+            if (quality <= 0.57) max = Math.max(900, Math.round(max * 0.88));
+          } else break;
+        }
+        resolve(blob);
+      } catch (error) {
+        reject(error);
+      }
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read image.')); };
     img.src = url;
