@@ -1,0 +1,4 @@
+1. Add AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY to Vercel Production.
+2. Deploy main.
+3. Open /admin and run Build AI face index for the event.
+4. Customer selfie is then matched through Amazon Rekognition.
