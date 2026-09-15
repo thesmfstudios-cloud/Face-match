@@ -268,6 +268,31 @@ export default function Home() {
     }
   };
 
+  useEffect(() => {
+    if (!orderId || !paymentSent || downloadStarted) return undefined;
+    let cancelled = false;
+    let timer;
+    const check = async () => {
+      try {
+        const res = await fetch(`/api/orders/${orderId}/status`, { cache: 'no-store' });
+        const body = await res.json();
+        const status = body.order?.status;
+        if (cancelled) return;
+        if (status === 'approved' || status === 'fulfilled') {
+          await downloadApprovedPhotos(orderId);
+          return;
+        }
+        if (status === 'rejected') {
+          setMatchMessage('Payment was not approved. Please contact the event photographer.');
+          return;
+        }
+      } catch {}
+      if (!cancelled) timer = setTimeout(check, 5000);
+    };
+    check();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [orderId, paymentSent, downloadStarted, selected]);
+
   const displayPhotos = matched && photos.length ? photos.filter((p) => !p.no_match) : livePhotos;
   const eventName = event?.name || 'SAM College · 14 September 2026';
   const photoCount = event?.photos_count || photos.length || '1,248';
