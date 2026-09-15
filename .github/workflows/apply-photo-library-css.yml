@@ -1,0 +1,58 @@
+name: Apply admin photo library CSS
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-photo-library-css.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Append photo library styles
+        shell: bash
+        run: |
+          cat >> app/globals.css <<'CSS'
+
+.libraryPanel{margin-top:16px;background:#111;border:1px solid #2d2d2d;border-radius:4px;padding:24px}
+.libraryPanel .panelTitle{display:flex;align-items:center;gap:7px}
+.libraryStats{display:grid;grid-template-columns:repeat(4,1fr);margin-top:18px;border:1px solid #2d2d2d;border-radius:4px;overflow:hidden;background:#0d0d0d}
+.libraryStat{padding:16px;border-right:1px solid #2d2d2d;display:flex;flex-direction:column;gap:5px;min-width:0}
+.libraryStat:last-child{border-right:0}
+.libraryStat>span{font-size:8px;letter-spacing:.14em;color:#777;display:flex;align-items:center;gap:4px}
+.libraryStat>strong{font-size:18px;color:#f0ece5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.libraryStat>small{font-size:8px;color:#777;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.folderBar{margin-top:16px;padding:12px 14px;border:1px solid #2d2d2d;background:#151515;border-radius:3px;display:flex;align-items:center;gap:10px;color:#ddd}
+.folderBar>div{display:flex;flex-direction:column;gap:3px;min-width:0}
+.folderBar b{font-size:10px}
+.folderBar span{font-size:8px;color:#777}
+.photoLibraryGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px}
+.photoLibraryCard{background:#0d0d0d;border:1px solid #292929;border-radius:3px;overflow:hidden;min-width:0}
+.photoLibraryImage{height:220px;background:#080808;position:relative;overflow:hidden}
+.photoLibraryImage img{width:100%;height:100%;display:block;object-fit:cover}
+.photoNoPreview{height:100%;display:grid;place-items:center;color:#666;font-size:9px}
+.photoBadge{position:absolute;right:8px;top:8px;background:rgba(0,0,0,.72);border:1px solid #494949;border-radius:3px;padding:5px 7px;color:#fff;font-size:9px;font-weight:700}
+.photoLibraryMeta{padding:10px}
+.photoLibraryMeta b{display:block;font-size:9px;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.photoLibraryMeta span{display:block;margin-top:4px;font-size:8px;color:#777;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.storageMeter{margin-top:14px;padding:11px 12px;border:1px solid #2d2d2d;background:#151515;border-radius:3px}
+.storageMeterHead{display:flex;justify-content:space-between;gap:12px;margin-bottom:8px;font-size:9px;color:#888}
+.storageMeterHead b{color:#ddd}
+.storageMeterTrack{height:6px;border-radius:999px;background:#242424;overflow:hidden}
+.storageMeterFill{height:100%;background:#d9d4ca;min-width:2px}
+
+@media(max-width:920px){.libraryStats{grid-template-columns:repeat(2,1fr)}.libraryStat:nth-child(2){border-right:0}.libraryStat:nth-child(-n+2){border-bottom:1px solid #2d2d2d}.photoLibraryGrid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:620px){.libraryPanel{padding:18px}.libraryStats{grid-template-columns:1fr 1fr}.photoLibraryGrid{grid-template-columns:repeat(2,1fr)}.photoLibraryImage{height:180px}.libraryStat>strong{font-size:16px}}
+CSS
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/globals.css
+          git commit -m 'Style admin photo library dashboard'
+          rm -f .github/workflows/apply-photo-library-css.yml
+          git add -A
+          git commit -m 'Remove temporary photo library CSS workflow' || true
+          git push
