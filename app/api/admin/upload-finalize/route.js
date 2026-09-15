@@ -18,7 +18,7 @@ export async function POST(request) {
     if (!url || !serviceKey) return NextResponse.json({ error: 'Server Supabase variables are missing.' }, { status: 500 });
     const supabase = createClient(url, serviceKey, { auth: { persistSession: false } });
     const { eventSlug = 'sam-college-2026', uploads } = await request.json();
-    if (!Array.isArray(uploads) || !uploads.length) return NextResponse.json({ error: 'No uploads to finalize.' }, { status: 400 });
+    if (!Array.isArray(uploads) || !uploads.length) return NextResponse.json({ ok: true, count: 0, skipped: true, photos: [] });
     const { data: event, error: eventError } = await supabase.from('fm_events').select('id').eq('slug', eventSlug).single();
     if (eventError || !event) return NextResponse.json({ error: 'Event not found.' }, { status: 400 });
 
@@ -27,11 +27,12 @@ export async function POST(request) {
       original_path: u.originalPath,
       preview_path: u.previewPath,
       original_filename: u.name,
+      file_hash: u.fileHash || null,
       processing_status: 'ready',
       people_count: 1,
-      price: 10,
+      price: 5,
     }));
-    const { data, error } = await supabase.from('fm_photos').insert(rows).select('id,original_filename,preview_path,people_count,price,processing_status');
+    const { data, error } = await supabase.from('fm_photos').upsert(rows, { onConflict: 'event_id,file_hash', ignoreDuplicates: true }).select('id,original_filename,preview_path,people_count,price,processing_status');
     if (error) throw error;
     await supabase.rpc('fm_refresh_event_photo_count', { p_event_id: event.id });
     return NextResponse.json({ ok: true, count: data?.length || 0, photos: data || [] });
