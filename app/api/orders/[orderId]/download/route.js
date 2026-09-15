@@ -15,9 +15,10 @@ export async function GET(request, { params }) {
     if (!['approved','fulfilled'].includes(order.status)) return NextResponse.json({ error: 'Payment is not approved yet.' }, { status: 403 });
     if (!Array.isArray(order.selected_photo_ids) || !order.selected_photo_ids.includes(photoId)) return NextResponse.json({ error: 'Photo is not part of this order.' }, { status: 403 });
 
-    const { data: photo, error: photoError } = await supabase.from('fm_photos').select('original_path').eq('id', photoId).single();
+    const { data: photo, error: photoError } = await supabase.from('fm_photos').select('original_path,original_filename').eq('id', photoId).single();
     if (photoError || !photo) return NextResponse.json({ error: 'Photo not found.' }, { status: 404 });
-    const { data: signed, error: signedError } = await supabase.storage.from('fm-originals').createSignedUrl(photo.original_path, 300);
+    const downloadName = photo.original_filename || 'smf-original.jpg';
+    const { data: signed, error: signedError } = await supabase.storage.from('fm-originals').createSignedUrl(photo.original_path, 300, { download: downloadName });
     if (signedError) return NextResponse.json({ error: signedError.message }, { status: 500 });
     return NextResponse.redirect(signed.signedUrl);
   } catch (error) {
