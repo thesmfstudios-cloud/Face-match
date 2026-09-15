@@ -22,11 +22,11 @@ jobs:
 
           page = Path('app/page.js')
           s = page.read_text()
-          replacements = [
+
+          changes = [
             ("price: 10, preview_url", "price: 5, preview_url"),
             ("price: 30, preview_url", "price: 20, preview_url"),
             ("price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 30 : 10", "price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 20 : 5"),
-            ("₹10 single / ₹30 group", "₹5 single / ₹20 group"),
             ("₹10 single photo · ₹30 group photo · originals unlock after approval.", "₹5 single photo · ₹20 group photo · free preview download · originals unlock after approval."),
             ("Customers only receive a downscaled preview, never the original.", "Customers receive a clear, downscaled preview that can be downloaded for free; the full-resolution original stays private."),
             ("<div className=\"blurLayer\"/><div className=\"watermark\">SMF STUDIO</div>", ""),
@@ -35,26 +35,23 @@ jobs:
             ("<div className=\"pricingNote\"><ShieldCheck size={18}/> Full-resolution originals remain private.</div>", "<div className=\"pricingNote\"><ShieldCheck size={18}/> Free preview download · Full-resolution originals remain private until payment approval.</div>"),
             ("<div className=\"previewLock\"><Lock size={13}/> PREVIEW</div>", "<a className=\"previewLock\" href={p.preview_url} download={p.original_filename || 'smf-preview.jpg'} target=\"_blank\" rel=\"noreferrer\" onClick={(e) => e.stopPropagation()}>DOWNLOAD FREE PREVIEW</a>"),
           ]
-          for old, new in replacements:
-              if old not in s:
-                  raise SystemExit(f'Missing expected page text: {old[:100]}')
-              s = s.replace(old, new)
+          for old, new in changes:
+              if old in s:
+                  s = s.replace(old, new)
 
           old_wrap = '<button key={p.id} className={`photoCard ${selected.includes(p.id) ? \'chosen\' : \'\'}`} onClick={() => toggle(p.id)}>'
           new_wrap = '<div key={p.id} className={`photoCard ${selected.includes(p.id) ? \'chosen\' : \'\'}`} role="button" tabIndex={0} onClick={() => toggle(p.id)} onKeyDown={(e) => { if (e.key === \'Enter\' || e.key === \' \') { e.preventDefault(); toggle(p.id); } }}>'
-          if old_wrap not in s:
-              raise SystemExit('Missing photo card wrapper')
-          s = s.replace(old_wrap, new_wrap, 1)
-          close_marker = '</button>)}</div><div className="pricingRow">'
-          if close_marker not in s:
-              raise SystemExit('Missing photo card closing marker')
-          s = s.replace(close_marker, '</div>)}</div><div className="pricingRow">', 1)
+          if old_wrap in s:
+              s = s.replace(old_wrap, new_wrap, 1)
+              s = s.replace('</button>)}</div><div className="pricingRow">', '</div>)}</div><div className="pricingRow">', 1)
+
           page.write_text(s)
 
           admin = Path('app/admin/page.js')
           a = admin.read_text()
-          pattern = r'function makePreview\(file\) \{.*\}\s*$'
-          new_fn = '''function makePreview(file) {
+          if 'const MAX_BYTES = 800 * 1024;' not in a:
+              pattern = r'function makePreview\(file\) \{.*\}\s*$'
+              new_fn = '''function makePreview(file) {
             return new Promise((resolve, reject) => {
               const url = URL.createObjectURL(file);
               const img = new Image();
@@ -65,7 +62,6 @@ jobs:
                 let max = 1400;
                 let quality = 0.84;
                 let blob = null;
-
                 try {
                   for (let attempt = 0; attempt < 12; attempt++) {
                     const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
@@ -80,9 +76,7 @@ jobs:
                     if (blob.size > MAX_BYTES) {
                       quality = Math.max(0.50, quality - 0.07);
                       if (quality <= 0.57) max = Math.max(900, Math.round(max * 0.88));
-                    } else {
-                      break;
-                    }
+                    } else break;
                   }
                   resolve(blob);
                 } catch (error) {
@@ -93,16 +87,31 @@ jobs:
               img.src = url;
             });
           }'''
-          a2, count = re.subn(pattern, new_fn, a, flags=re.S)
-          if count != 1:
-              raise SystemExit(f'Expected one makePreview function, found {count}')
-          admin.write_text(a2)
+              a, count = re.subn(pattern, new_fn, a, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f'Expected one makePreview function, found {count}')
+              admin.write_text(a)
+
+          print('Patch complete')
           PY
 
-      - name: Commit patched files
+      - name: Verify and commit
         run: |
+          grep -q "₹5 single photo" app/page.js
+          grep -q "₹20 group photo" app/page.js
+          grep -q "DOWNLOAD FREE PREVIEW" app/page.js
+          grep -q "MAX_BYTES = 800 \* 1024" app/admin/page.js
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/page.js app/admin/page.js
-          git commit -m "Update preview quality and photo pricing" || exit 0
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Set free preview downloads and new photo pricing"
+          git push
+
+      - name: Remove temporary workflow
+        run: |
+          git rm .github/workflows/update-photo-pricing.yml
+          git commit -m "Remove temporary pricing patch workflow"
           git push
