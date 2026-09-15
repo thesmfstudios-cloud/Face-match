@@ -283,7 +283,7 @@ export default function Home() {
   return <main className="shell">
     <header className="topbar">
       <div className="brand" onClick={() => setMode('customer')}><div className="brandMark">SMF</div><div><div className="brandName">PHOTO MATCH</div><div className="brandSub">SMART EVENT DELIVERY</div></div></div>
-      <div className="topActions"><span className="secure"><ShieldCheck size={15}/> Private originals</span><div className="segmented"><button className={mode === 'customer' ? 'active' : ''} onClick={() => setMode('customer')}>Customer</button><button className={mode === 'admin' ? 'active' : ''} onClick={() => setMode('admin')}>Admin</button></div></div>
+      <div className="topActions"><span className="secure"><ShieldCheck size={15}/> Private originals</span><div className="segmented"><button className={mode === 'customer' ? 'active' : ''} onClick={() => setMode('customer')}>Customer</button><button className="adminLinkButton" onClick={() => { window.location.href = '/admin'; }}>Admin</button></div></div>
     </header>
 
     {mode === 'customer' ? <>
@@ -298,7 +298,7 @@ export default function Home() {
       {!matched ? <section className="howItWorks"><div className="howIntro"><span className="eyebrow">HOW IT WORKS</span><h2>One selfie. Your gallery.</h2></div><div className="howGrid"><Feature icon={<Search/>} n="01" title="Match your face" copy="Your selfie is compared with faces detected in event photos."/><Feature icon={<Lock/>} n="02" title="Preview securely" copy="Customers receive a clear, downscaled preview that can be downloaded for free; the full-resolution original stays private until verified payment."/><Feature icon={<IndianRupee/>} n="03" title="Buy what you want" copy="₹5 single photo · ₹20 group photo · free preview download · originals unlock after secure payment verification."/></div></section> : <section className="resultsSection"><div className="resultHeader"><div><span className="eyebrow">MATCH RESULTS</span><h2>Your photos <span>· {displayPhotos.length} matches</span></h2></div><div className="resultTrust"><Lock size={14}/> Originals locked</div></div><div className="photoGrid">{displayPhotos.map((p) => <div key={p.id} className={`photoCard ${selected.includes(p.id) ? 'chosen' : ''}`} role="button" tabIndex={0} onClick={() => toggle(p.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(p.id); } }}><img src={p.preview_url} alt="Event preview" crossOrigin="anonymous"/><div className="photoGradient"/><div className="photoBottom"><span>{Number(p.people_count || 1) > 1 ? 'Group' : 'Single'} · {p.people_count || 1} {(p.people_count || 1) === 1 ? 'face' : 'faces'}</span><b>₹{p.price || (Number(p.people_count || 1) > 1 ? 20 : 5)}</b></div>{selected.includes(p.id) && <div className="selectedBadge"><Check size={16}/></div>}<a className="previewLock" href={p.preview_url} download={p.original_filename || 'smf-preview.jpg'} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>DOWNLOAD FREE PREVIEW</a></div>)}</div><div className="pricingRow"><div><b>Single photo</b><span>₹5</span></div><div><b>Group photo</b><span>₹20</span></div><div className="pricingNote"><ShieldCheck size={18}/> Free preview download · Full-resolution originals remain private until payment verification.</div></div></section>}
 
       {selected.length > 0 && <div className="checkoutBar"><div className="checkoutSummary"><b>{selected.length} selected</b><span>Original-quality downloads</span></div><div className="checkoutAction"><strong>₹{total}</strong><button className="primaryButton" onClick={() => setPaymentOpen(true)} disabled={paymentLoading}>{paymentLoading ? <><Loader2 size={17} className="spin"/> Processing…</> : <>Pay securely <ArrowRight size={17}/></>}</button></div></div>}
-    </> : <AdminView />}
+    </> : null}
 
     {cameraOpen && <CameraModal videoRef={videoRef} onCapture={captureCameraSelfie} onClose={stopCamera}/>} 
     {paymentOpen && <PaymentModal amount={total} onClose={() => setPaymentOpen(false)} onSubmit={submitPayment}/>}<footer className="footer">© 2026 SMF Studio · Face Match Photo Delivery · Secure checkout</footer>
@@ -336,45 +336,4 @@ function PaymentModal({ amount, onClose, onSubmit }) {
   return <div className="modalBackdrop"><div className="paymentModal"><button className="closeButton" onClick={onClose}><X size={19}/></button><div className="modalEyebrow"><IndianRupee size={15}/> SECURE CHECKOUT</div><h2>Pay ₹{amount}</h2><p>Continue to Razorpay for UPI, cards and other supported payment methods. Payment is verified securely on our server before originals are unlocked.</p><div className="checkoutPreview"><ShieldCheck size={18}/><div><b>Automatic verification</b><span>No UTR or manual payment proof required.</span></div></div><button className="primaryButton wide" onClick={onSubmit}>Continue to Razorpay <ArrowRight size={17}/></button><div className="modalFoot"><ShieldCheck size={14}/> Full-resolution originals unlock only after successful payment verification.</div></div></div>;
 }
 
-function AdminView() {
-  const ref = useRef(null);
-  const [code, setCode] = useState('');
-  const [files, setFiles] = useState([]);
-  const [uploading, setUploading] = useState(false);
-  const [result, setResult] = useState('');
-  const [orders, setOrders] = useState([]);
-  const [loadingOrders, setLoadingOrders] = useState(false);
-
-  const upload = async () => {
-    if (!code || !files.length) return;
-    setUploading(true); setResult('Uploading originals and generating previews…');
-    try {
-      const form = new FormData();
-      form.append('eventSlug', EVENT_SLUG);
-      [...files].forEach((f) => form.append('photos', f));
-      const res = await fetch('/api/admin/upload', { method: 'POST', headers: { 'x-admin-code': code }, body: form });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || 'Upload failed.');
-      setResult(`${body.count} photos uploaded successfully.`); setFiles([]); if (ref.current) ref.current.value = '';
-    } catch (err) { setResult(err?.message || 'Upload failed.'); }
-    finally { setUploading(false); }
-  };
-
-  const loadOrders = async () => {
-    if (!code) return;
-    setLoadingOrders(true);
-    try { const res = await fetch('/api/admin/orders', { headers: { 'x-admin-code': code } }); const body = await res.json(); if (!res.ok) throw new Error(body.error || 'Could not load orders.'); setOrders(body.orders || []); }
-    catch (err) { setResult(err?.message || 'Could not load orders.'); }
-    finally { setLoadingOrders(false); }
-  };
-
-  const review = async (id, status) => {
-    const res = await fetch('/api/admin/orders', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'x-admin-code': code }, body: JSON.stringify({ id, status }) });
-    const body = await res.json(); if (!res.ok) return setResult(body.error || 'Update failed.');
-    setOrders((current) => current.map((o) => o.id === id ? { ...o, status } : o));
-  };
-
-  return <section className="adminPage"><div className="adminHeader"><div><span className="eyebrow">ADMIN CONSOLE</span><h1>Event photo manager</h1><p>Upload originals, generate private previews, and monitor completed Razorpay orders.</p></div><div className="ready"><CheckCircle2 size={16}/> System ready</div></div><div className="adminAccess"><Lock size={16}/><input type="password" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Admin access code"/><span>Server-only access</span></div><div className="adminGrid"><div className="uploadPanel"><div className="uploadIcon"><ImagePlus size={30}/></div><h2>Upload event originals</h2><p>Files are sent to the private <code>fm-originals</code> bucket. A smaller preview is created server-side.</p><input ref={ref} hidden type="file" multiple accept="image/*" onChange={(e) => setFiles(e.target.files || [])}/><button onClick={() => ref.current?.click()} className="darkButton"><Upload size={17}/> Choose photos</button>{files.length > 0 && <button onClick={upload} className="primaryButton adminUpload" disabled={uploading || !code}>{uploading ? <><Loader2 size={17} className="spin"/> Uploading…</> : <>Upload {files.length} photos <ArrowRight size={17}/></>}</button>}{result && <div className="uploadSuccess"><CheckCircle2 size={16}/> {result}</div>}</div><div className="workflowPanel"><div className="panelTitle">Production workflow</div><Workflow n="01" t="Upload originals" s="Live"/><Workflow n="02" t="Generate downscaled previews" s="Server"/><Workflow n="03" t="Customer face matching" s="Browser AI"/><Workflow n="04" t="Verify Razorpay payments" s="Automatic"/></div></div><div className="ordersPanel"><div className="ordersHead"><div><div className="panelTitle">Payment queue</div><p>Razorpay payments are verified server-side; completed orders appear here automatically.</p></div><button className="refreshButton" disabled={!code || loadingOrders} onClick={loadOrders}>{loadingOrders ? <Loader2 size={16} className="spin"/> : <RefreshCw size={16}/>} Refresh</button></div>{orders.length === 0 ? <div className="emptyOrders">No completed payment orders loaded yet.</div> : <div className="ordersTable">{orders.map((o) => <div className="orderRow" key={o.id}><div><b>{o.id.slice(0, 8)}…</b><span>Payment {o.utr}</span></div><div><strong>₹{o.total}</strong><span>{new Date(o.created_at).toLocaleString()}</span></div><div className="orderStatus">{o.status}</div><div className="orderActions">{o.status === 'payment_submitted' && <><button onClick={() => review(o.id, 'approved')}>Approve</button><button onClick={() => review(o.id, 'rejected')}>Reject</button></>}</div></div>)}</div>}</div><div className="securityCallout"><ShieldCheck size={19}/><div><b>Private originals</b><p>Customers never query the original bucket. The original-path stays server-side and can be used for signed downloads after verified payment.</p></div></div></section>;
-}
-
-function Workflow({ n, t, s }) { return <div className="workflowStep"><span className="stepNum">{n}</span><div><b>{t}</b></div><span className="stepStatus">{s}</span></div>; }
+function FeatureAdminRemoved() { return null; }
