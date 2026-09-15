@@ -1,0 +1,167 @@
+name: Polish mobile customer UI
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  polish:
+    if: "!contains(github.event.head_commit.message, '[mobile-ui-polished]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Patch mobile UX and responsive styles
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          page = Path('app/page.js')
+          s = page.read_text()
+          old = '<input id="selfie" hidden type="file" accept="image/*" capture="user" onChange={chooseSelfie}/>'
+          new = '<input id="selfie" hidden type="file" accept="image/*" onChange={chooseSelfie}/>'
+          if old in s:
+              s = s.replace(old, new, 1)
+          page.write_text(s)
+
+          css = Path('app/globals.css')
+          c = css.read_text()
+          marker = '/* MOBILE CUSTOMER UI POLISH */'
+          if marker not in c:
+              c += r'''
+
+/* MOBILE CUSTOMER UI POLISH */
+@media (max-width: 900px){
+  body{overflow-x:hidden}
+  .topbar{height:72px;padding:0 18px}
+  .brand{gap:10px}
+  .brandMark{width:62px}
+  .brandMark:before{font-size:24px}
+  .brandMark:after{font-size:7px;letter-spacing:.28em;margin-top:6px}
+  .brandName:before{font-size:7px;letter-spacing:.28em}
+  .brandSub:before{font-size:6px;letter-spacing:.3em}
+  .brandName{padding-left:12px}
+  .brandSub{padding-left:13px;margin-top:5px}
+  .topActions{gap:12px}
+  .secure{display:none}
+  .segmented{gap:10px}
+  .segmented button:first-child{display:none}
+  .segmented button:last-child{padding:10px 12px;border-radius:10px}
+
+  .hero{padding:40px 22px 20px;min-height:0}
+  .hero:before{inset:0;opacity:.23;background:linear-gradient(180deg,rgba(7,7,7,.2),rgba(7,7,7,.94)),url('https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=900&q=78') center/cover no-repeat}
+  .hero:after{display:none}
+  .eyebrowPill{font-size:8px;letter-spacing:.24em}
+  .hero h1{font-size:clamp(52px,15vw,78px);line-height:.9;max-width:100%;margin:16px 0 18px;letter-spacing:-.06em}
+  .heroCopy{font-size:14px;line-height:1.5;max-width:100%}
+  .heroCopy:after{font-size:10px;margin-top:18px;line-height:1.7;content:'FAST SEARCH  ·  100% PRIVATE  ·  REAL EVENT PHOTOS'}
+  .eventBar{margin-top:24px;padding:14px 15px;gap:12px;display:grid;grid-template-columns:1fr auto;border-radius:13px}
+  .eventBar>div:first-child{display:block}
+  .micro{display:block;margin-bottom:5px}
+  .eventBar strong{font-size:12px;line-height:1.4}
+  .eventMeta{text-align:right;font-size:9px}
+  .eventMeta b{display:block;font-size:18px;line-height:1;margin-bottom:3px}
+
+  .finderCard{margin:12px 16px 48px;display:block;border-radius:18px;min-height:0;overflow:hidden}
+  .finderIcon{width:100%;min-height:86px;height:86px;border-right:0;border-bottom:1px solid #2d2d2d;display:flex;justify-content:flex-start;padding:0 22px;background:linear-gradient(120deg,#151515,#0d0d0d)}
+  .finderIcon svg{width:32px;height:32px}
+  .finderBody{padding:20px 20px 12px}
+  .finderTitle{font-size:22px}
+  .finderHint{font-size:11px;line-height:1.5;margin:7px 0 16px}
+  .finderControls{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .uploadButton,.cameraButton{width:100%;min-height:46px;justify-content:center;padding:11px 10px;font-size:10px;border-radius:10px}
+  .finderBody:after{margin-top:10px;font-size:8px}
+  .finderCard>.primaryButton{width:calc(100% - 40px);margin:10px 20px 20px;height:50px;min-width:0;font-size:11px;border-radius:11px}
+  .finderCard>.primaryButton:before{font-size:11px}
+
+  .notice{margin:0 16px 18px;padding:11px 12px;font-size:10px;line-height:1.45}
+  .howItWorks,.resultsSection{padding:0 16px 52px}
+  .howIntro{display:block;padding-bottom:14px}
+  .howIntro h2{font-size:31px;margin-top:7px}
+  .howIntro:after{display:block;margin:11px 0 0;font-size:7px;letter-spacing:.25em}
+  .howGrid{display:block}
+  .feature{border-right:0;border-bottom:1px solid #2b2b2b;padding:20px 0;min-height:0}
+  .feature:last-child{border-bottom:0}
+  .featureTop div{width:40px;height:40px}
+  .feature h3{font-size:15px;margin:15px 0 6px}
+  .feature p{font-size:10px;line-height:1.55;max-width:none}
+
+  .resultHeader{align-items:flex-start;gap:14px;margin-bottom:14px}
+  .resultHeader h2{font-size:29px}
+  .resultHeader h2 span{display:block;margin-top:3px;font-size:10px}
+  .resultTrust{font-size:8px;white-space:nowrap;padding-top:8px}
+  .photoGrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .photoCard{height:auto;aspect-ratio:3/4;border-radius:7px}
+  .previewLock{top:7px;left:7px;font-size:7px;padding:6px 7px;border-radius:5px}
+  .selectedBadge{top:7px;right:7px;width:27px;height:27px}
+  .photoBottom{padding:10px}
+  .photoBottom span{font-size:7px;line-height:1.3}
+  .photoBottom b{font-size:12px}
+  .pricingRow{gap:7px}
+  .pricingRow>div:not(.pricingNote){font-size:9px;padding:9px 10px}
+  .pricingNote{width:100%;margin:3px 0 0;font-size:8px;line-height:1.4}
+
+  .checkoutBar{bottom:max(10px,env(safe-area-inset-bottom));width:calc(100% - 20px);padding:10px 10px 10px 13px;border-radius:14px;gap:8px}
+  .checkoutSummary b{font-size:11px}
+  .checkoutSummary span{font-size:8px}
+  .checkoutAction{gap:9px}
+  .checkoutAction strong{font-size:18px}
+  .checkoutAction .primaryButton{height:42px;padding:0 12px;border-radius:10px;font-size:10px}
+
+  .modalBackdrop{padding:10px;align-items:end}
+  .paymentModal{width:100%;border-radius:18px 18px 12px 12px;padding:22px 18px max(18px,env(safe-area-inset-bottom))}
+  .paymentModal h2{font-size:29px}
+  .paymentModal>p{font-size:10px}
+  .modalFoot{font-size:8px;line-height:1.4}
+
+  .cameraBackdrop{padding:10px}
+  .cameraModal{width:100%;max-height:92vh;border-radius:18px}
+}
+
+@media (max-width: 520px){
+  .topbar{padding:0 14px}
+  .brandName:before{font-size:6px;letter-spacing:.23em}
+  .brandSub:before{font-size:5px;letter-spacing:.24em}
+  .segmented button:last-child{padding:9px 10px}
+  .hero{padding:34px 18px 18px}
+  .hero h1{font-size:clamp(48px,16.5vw,68px)}
+  .heroCopy{font-size:13px}
+  .eventBar{grid-template-columns:1fr;padding:13px 14px}
+  .eventMeta{text-align:left;border-top:1px solid #2b2b2b;padding-top:11px}
+  .eventMeta b{display:inline;font-size:12px;margin-right:3px}
+  .finderCard{margin-left:12px;margin-right:12px}
+  .finderBody{padding-left:17px;padding-right:17px}
+  .finderControls{grid-template-columns:1fr}
+  .finderCard>.primaryButton{width:calc(100% - 34px);margin-left:17px;margin-right:17px}
+  .howItWorks,.resultsSection{padding-left:12px;padding-right:12px}
+  .photoGrid{gap:7px}
+  .photoCard{aspect-ratio:2.9/4}
+  .checkoutBar{width:calc(100% - 14px)}
+}
+'''
+              css.write_text(c)
+          PY
+
+      - name: Commit changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/page.js app/globals.css
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Polish mobile customer UI [mobile-ui-polished]"
+          git push origin HEAD:main
+
+      - name: Remove one-time workflow
+        shell: bash
+        run: |
+          git rm -f .github/workflows/mobile-ui-polish.yml || true
+          git commit -m "Remove one-time mobile UI workflow [mobile-ui-polished]" || true
+          git push origin HEAD:main || true
