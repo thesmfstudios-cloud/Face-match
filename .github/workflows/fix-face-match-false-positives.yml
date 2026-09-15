@@ -1,0 +1,89 @@
+name: Fix face matching false positives
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-face-match-false-positives.yml'
+  workflow_dispatch:
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch matcher for better recall
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/page.js')
+          text = path.read_text(encoding='utf-8')
+
+          old = """          // Strict matching to reduce false positives. A single weak/ambiguous
+          // similarity in a group photo must not make the whole photo a match.
+          const candidates = faces
+            .map((f) => ({
+              descriptor: f.descriptor,
+              detectionScore: Number(f.detection?.score || 0),
+              distance: faceapi.euclideanDistance(probe.descriptor, f.descriptor),
+            }))
+            .filter((f) => f.detectionScore >= 0.60)
+            .sort((a, b) => a.distance - b.distance);
+
+          const bestCandidate = candidates[0];
+          const best = bestCandidate?.distance ?? 9;
+
+          // 0.48 is intentionally stricter than the previous 0.53 threshold.
+          // This prioritizes precision over recall for paid photo delivery.
+          if (best < 0.48) {
+            return {
+              ...photo,
+              match_distance: best,
+              people_count: Math.max(Number(photo.people_count || 1), faces.length),
+              price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5,
+            };
+          }"""
+
+          new = """          // Balanced matching: restore recall for legitimate variations while
+          // still filtering low-confidence detections that commonly cause false positives.
+          const candidates = faces
+            .map((f) => ({
+              detectionScore: Number(f.detection?.score || 0),
+              distance: faceapi.euclideanDistance(probe.descriptor, f.descriptor),
+            }))
+            .filter((f) => f.detectionScore >= 0.50)
+            .sort((a, b) => a.distance - b.distance);
+
+          const bestCandidate = candidates[0];
+          const best = bestCandidate?.distance ?? 9;
+
+          // 0.515 gives materially better recall than 0.48 while remaining
+          // stricter than the original 0.53 setting.
+          if (best < 0.515) {
+            return {
+              ...photo,
+              match_distance: best,
+              people_count: Math.max(Number(photo.people_count || 1), faces.length),
+              price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5,
+            };
+          }"""
+
+          if old not in text:
+              raise SystemExit('Expected current matcher block not found; aborting.')
+
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Commit patch and remove one-time workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/page.js
+          if ! git diff --cached --quiet; then
+            git commit -m "Balance face matching recall and precision"
+            git push
+          fi
+          git rm .github/workflows/fix-face-match-false-positives.yml
+          git commit -m "Remove one-time face match fix workflow"
+          git push
