@@ -1,0 +1,99 @@
+name: Finalize face scan fix
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: "!contains(github.event.head_commit.message, '[face-scan-fix-done]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Patch page
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('app/page.js')
+          s = p.read_text()
+
+          if 'const SCAN_BATCH_SIZE = 4;' not in s:
+              s = s.replace("const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';\n", "const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';\nconst SCAN_BATCH_SIZE = 4;\n", 1)
+
+          s = re.sub(r"(\n\s*)await requestScanNotification\(\);(?:\1await requestScanNotification\(\);)+", r"\1await requestScanNotification();", s, count=1)
+          s = re.sub(r"(\n\s*)notifyScanComplete\(results\.length\);(?:\1notifyScanComplete\(results\.length\);)+", r"\1notifyScanComplete(results.length);", s, count=1)
+
+          start = s.find('      const results = [];\n      for (const photo of photos) {')
+          end = s.find('      setMatched(true);\n      setMatching(false);', start)
+          if start == -1 or end == -1:
+              raise SystemExit('Expected sequential scan loop was not found')
+
+          new_block = "\n".join([
+              "      const results = [];",
+              "      const scanPhoto = async (photo) => {",
+              "        try {",
+              "          const img = await loadImage(photo.preview_url, true);",
+              "          const faces = await faceapi.detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.45 }))",
+              "            .withFaceLandmarks().withFaceDescriptors();",
+              "          const distances = faces.map((f) => faceapi.euclideanDistance(probe.descriptor, f.descriptor));",
+              "          const best = distances.length ? Math.min(...distances) : 9;",
+              "          if (best < 0.53) return { ...photo, match_distance: best, people_count: Math.max(Number(photo.people_count || 1), faces.length), price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5 };",
+              "        } catch (err) {",
+              "          console.warn('Could not scan photo', photo.id, err);",
+              "        }",
+              "        return null;",
+              "      };",
+              "",
+              "      for (let offset = 0; offset < photos.length; offset += SCAN_BATCH_SIZE) {",
+              "        const batch = photos.slice(offset, offset + SCAN_BATCH_SIZE);",
+              "        setMatchMessage(`Scanning your photos… ${Math.min(offset + batch.length, photos.length)}/${photos.length} scanned. This can take up to 5–10 minutes. Please keep this page open.`);",
+              "        const batchResults = await Promise.all(batch.map(scanPhoto));",
+              "        for (const result of batchResults) if (result) results.push(result);",
+              "      }",
+              ""
+          ])
+          s = s[:start] + new_block + s[end:]
+
+          s = s.replace("    setMatchMessage('Scanning your photos… This can take up to 5–10 minutes. Please keep this page open.');\n", "    setMatchMessage(`Scanning your photos… 0/${photos.length} scanned. This can take up to 5–10 minutes. Please keep this page open.`);\n", 1)
+
+          p.write_text(s)
+          PY
+
+      - name: Commit with rebase retry
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/page.js
+          if git diff --cached --quiet; then
+            echo "No page changes needed."
+          else
+            git commit -m "Optimize face scan and clean notifications [face-scan-fix-done]"
+            for attempt in 1 2 3 4 5; do
+              if git pull --rebase origin main && git push origin HEAD:main; then
+                break
+              fi
+              if [ "$attempt" = "5" ]; then exit 1; fi
+              sleep 2
+            done
+          fi
+
+      - name: Remove this workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git reset --hard origin/main
+          git rm -f .github/workflows/finalize-face-scan-fix.yml
+          git commit -m "Remove one-time face scan fix workflow [face-scan-fix-done]" || true
+          git push origin HEAD:main || true
