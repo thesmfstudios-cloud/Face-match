@@ -15,7 +15,7 @@ function getRazorpay() {
   const key_id = process.env.RAZORPAY_KEY_ID;
   const key_secret = process.env.RAZORPAY_KEY_SECRET;
   if (!key_id || !key_secret) throw new Error('Razorpay server configuration missing.');
-  return new Razorpay({ key_id, key_secret });
+  return { client: new Razorpay({ key_id, key_secret }), key_id };
 }
 
 export async function POST(request) {
@@ -65,7 +65,7 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Invalid payment amount.' }, { status: 400 });
     }
 
-    const razorpay = getRazorpay();
+    const { client: razorpay, key_id } = getRazorpay();
     const order = await razorpay.orders.create({
       amount,
       currency: 'INR',
@@ -73,7 +73,14 @@ export async function POST(request) {
       notes: { event: eventSlug.slice(0, 256), photo_count: String(photoIds.length) },
     });
 
-    return NextResponse.json({ order_id: order.id, amount: order.amount, currency: order.currency });
+    // Return the exact public Key ID used by the server to create this order.
+    // This prevents test/live key mismatches between the checkout and the order.
+    return NextResponse.json({
+      order_id: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      key_id,
+    });
   } catch (error) {
     const status = Number(error?.statusCode || error?.status || 0);
     const message = error?.error?.description || error?.message || 'Could not create Razorpay order.';
