@@ -1,0 +1,47 @@
+name: Update photo pricing
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  update-pricing:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply pricing updates
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/page.js')
+          s = p.read_text()
+          replacements = {
+              'people_count: 4, price: 20': 'people_count: 4, price: 15',
+              'people_count: 8, price: 20': 'people_count: 8, price: 15',
+              'people_count: 2, price: 20': 'people_count: 2, price: 15',
+              'people_count: 6, price: 20': 'people_count: 6, price: 15',
+              "price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 20 : 5": "price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5",
+              '₹5 single photo · ₹20 group photo': '₹5 single photo · ₹15 group photo',
+              "Number(p.people_count || 1) > 1 ? 20 : 5": "Number(p.people_count || 1) > 1 ? 15 : 5",
+              '<b>Group photo</b><span>₹20</span>': '<b>Group photo</b><span>₹15</span>',
+              "const total = useMemo(() => selected.reduce((sum, id) => sum + Number(livePhotos.find((p) => p.id === id)?.price || 0), 0), [selected, livePhotos]);": "const total = useMemo(() => selected.reduce((sum, id) => { const p = livePhotos.find((x) => x.id === id); const people = Number(p?.people_count || 1); return sum + (people > 1 ? 15 : 5); }, 0), [selected, livePhotos]);",
+          }
+          for old, new in replacements.items():
+              s = s.replace(old, new)
+          marker = "body: JSON.stringify({ eventSlug: EVENT_SLUG, selectedPhotoIds: selected }),"
+          replacement = "body: JSON.stringify({ eventSlug: EVENT_SLUG, selectedPhotoIds: selected, groupPhotoIds: selected.filter((id) => Number(livePhotos.find((p) => p.id === id)?.people_count || 1) > 1) }),"
+          s = s.replace(marker, replacement)
+          p.write_text(s)
+          PY
+      - name: Commit pricing updates
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/page.js
+          git diff --cached --quiet && exit 0
+          git commit -m 'Apply ₹5 single ₹15 group pricing'
+          git push
