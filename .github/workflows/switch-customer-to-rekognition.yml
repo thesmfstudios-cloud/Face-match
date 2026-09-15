@@ -1,3 +1,4 @@
+# Rekognition customer migration trigger
 name: Switch customer matching to Amazon Rekognition
 
 on:
@@ -21,7 +22,6 @@ jobs:
 
           path = Path('app/page.js')
           text = path.read_text(encoding='utf-8')
-
           start = text.find('  const runFaceMatch = async () => {')
           end = text.find('\n\n  const toggle = (id) =>', start)
           if start == -1 or end == -1:
