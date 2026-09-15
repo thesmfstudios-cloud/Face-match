@@ -36,6 +36,8 @@ export default function Home() {
   const [cameraOpen, setCameraOpen] = useState(false);
   const videoRef = useRef(null);
   const cameraStreamRef = useRef(null);
+  const [downloadStarting, setDownloadStarting] = useState(false);
+  const [downloadStarted, setDownloadStarted] = useState(false);
 
   const livePhotos = photos.length ? photos : DEMO_PHOTOS;
   const total = useMemo(() => selected.reduce((sum, id) => sum + Number(livePhotos.find((p) => p.id === id)?.price || 0), 0), [selected, livePhotos]);
@@ -170,6 +172,28 @@ export default function Home() {
 
   const toggle = (id) => setSelected((s) => s.includes(id) ? s.filter((x) => x !== id) : [...s, id]);
 
+  const downloadApprovedPhotos = async (approvedOrderId) => {
+    if (!approvedOrderId || !selected.length || downloadStarting || downloadStarted) return;
+    setDownloadStarting(true);
+    setMatchMessage('Payment approved. Starting your original downloads…');
+    try {
+      for (let i = 0; i < selected.length; i++) {
+        const a = document.createElement('a');
+        a.href = `/api/orders/${approvedOrderId}/download?photoId=${encodeURIComponent(selected[i])}`;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        if (i < selected.length - 1) await new Promise((r) => setTimeout(r, 900));
+      }
+      setDownloadStarted(true);
+      setMatchMessage(`${selected.length} original download${selected.length === 1 ? '' : 's'} started.`);
+    } finally {
+      setDownloadStarting(false);
+    }
+  };
+
   const submitPayment = async () => {
     if (!utr.trim() || !selected.length) return;
     try {
@@ -184,6 +208,31 @@ export default function Home() {
       setMatchMessage(err?.message || 'Payment submission failed.');
     }
   };
+
+  useEffect(() => {
+    if (!orderId || !paymentSent || downloadStarted) return undefined;
+    let cancelled = false;
+    let timer;
+    const check = async () => {
+      try {
+        const res = await fetch(`/api/orders/${orderId}/status`, { cache: 'no-store' });
+        const body = await res.json();
+        const status = body.order?.status;
+        if (cancelled) return;
+        if (status === 'approved' || status === 'fulfilled') {
+          await downloadApprovedPhotos(orderId);
+          return;
+        }
+        if (status === 'rejected') {
+          setMatchMessage('Payment was not approved. Please contact the event photographer.');
+          return;
+        }
+      } catch {}
+      if (!cancelled) timer = setTimeout(check, 5000);
+    };
+    check();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [orderId, paymentSent, downloadStarted, selected]);
 
   const displayPhotos = matched && photos.length ? photos.filter((p) => !p.no_match) : livePhotos;
   const eventName = event?.name || 'SAM College · 14 September 2026';
@@ -202,7 +251,7 @@ export default function Home() {
 
       {dataError && <div className="notice">{dataError}</div>}
       {matchMessage && <div className={`notice ${matchMessage.includes('found') ? 'successNotice' : ''}`}>{matchMessage}</div>}
-      {paymentSent && <div className="notice successNotice"><CheckCircle2 size={17}/> Payment submitted. UTR recorded; admin verification is required.{orderId && <> Order: <code>{orderId}</code></>}</div>}
+      {paymentSent && <div className="notice successNotice"><CheckCircle2 size={17}/> Payment submitted. UTR recorded. Originals will start downloading automatically after admin approval.{orderId && <> Order: <code>{orderId}</code></>}</div>}
 
       {!matched ? <section className="howItWorks"><div className="howIntro"><span className="eyebrow">HOW IT WORKS</span><h2>One selfie. Your gallery.</h2></div><div className="howGrid"><Feature icon={<Search/>} n="01" title="Match your face" copy="Your selfie is compared with faces detected in event photos."/><Feature icon={<Lock/>} n="02" title="Preview securely" copy="Customers receive a clear, downscaled preview that can be downloaded for free; the full-resolution original stays private."/><Feature icon={<IndianRupee/>} n="03" title="Buy what you want" copy="₹5 single photo · ₹20 group photo · free preview download · originals unlock after approval."/></div></section> : <section className="resultsSection"><div className="resultHeader"><div><span className="eyebrow">MATCH RESULTS</span><h2>Your photos <span>· {displayPhotos.length} matches</span></h2></div><div className="resultTrust"><Lock size={14}/> Originals locked</div></div><div className="photoGrid">{displayPhotos.map((p) => <div key={p.id} className={`photoCard ${selected.includes(p.id) ? 'chosen' : ''}`} role="button" tabIndex={0} onClick={() => toggle(p.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(p.id); } }}><img src={p.preview_url} alt="Event preview" crossOrigin="anonymous"/><div className="photoGradient"/><div className="photoBottom"><span>{Number(p.people_count || 1) > 1 ? 'Group' : 'Single'} · {p.people_count || 1} {(p.people_count || 1) === 1 ? 'face' : 'faces'}</span><b>₹{p.price || (Number(p.people_count || 1) > 1 ? 20 : 5)}</b></div>{selected.includes(p.id) && <div className="selectedBadge"><Check size={16}/></div>}<a className="previewLock" href={p.preview_url} download={p.original_filename || 'smf-preview.jpg'} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>DOWNLOAD FREE PREVIEW</a></div>)}</div><div className="pricingRow"><div><b>Single photo</b><span>₹5</span></div><div><b>Group photo</b><span>₹20</span></div><div className="pricingNote"><ShieldCheck size={18}/> Free preview download · Full-resolution originals remain private until payment approval.</div></div></section>}
 
