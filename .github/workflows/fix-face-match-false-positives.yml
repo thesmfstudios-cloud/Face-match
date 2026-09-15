@@ -1,0 +1,42 @@
+name: Fix face matching false positives
+
+on:
+  workflow_dispatch:
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch matcher
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/page.js')
+          text = path.read_text(encoding='utf-8')
+
+          old = """          const distances = faces.map((f) => faceapi.euclideanDistance(probe.descriptor, f.descriptor));\n          const best = distances.length ? Math.min(...distances) : 9;\n          if (best < 0.53) return { ...photo, match_distance: best, people_count: Math.max(Number(photo.people_count || 1), faces.length), price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5 };"""
+
+          new = """          // Strict matching to reduce false positives. A single weak/ambiguous\n          // similarity in a group photo must not make the whole photo a match.\n          const candidates = faces\n            .map((f) => ({\n              descriptor: f.descriptor,\n              detectionScore: Number(f.detection?.score || 0),\n              distance: faceapi.euclideanDistance(probe.descriptor, f.descriptor),\n            }))\n            .filter((f) => f.detectionScore >= 0.60)\n            .sort((a, b) => a.distance - b.distance);\n\n          const bestCandidate = candidates[0];\n          const best = bestCandidate?.distance ?? 9;\n\n          // 0.48 is intentionally stricter than the previous 0.53 threshold.\n          // This prioritizes precision over recall for paid photo delivery.\n          if (best < 0.48) {\n            return {\n              ...photo,\n              match_distance: best,\n              people_count: Math.max(Number(photo.people_count || 1), faces.length),\n              price: Math.max(Number(photo.people_count || 1), faces.length) > 1 ? 15 : 5,\n            };\n          }"""
+
+          if old not in text:
+              raise SystemExit('Expected matcher block not found; aborting without changes.')
+
+          text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/page.js
+          git diff --cached --quiet || git commit -m "Tighten face matching threshold"
+          git push
+      - name: Remove one-time workflow
+        run: |
+          git rm .github/workflows/fix-face-match-false-positives.yml
+          git commit -m "Remove one-time face match fix workflow"
+          git push
