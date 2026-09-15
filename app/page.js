@@ -223,20 +223,35 @@ export default function Home() {
   const downloadApprovedPhotos = async (approvedOrderId) => {
     if (!approvedOrderId || !selected.length || downloadStarting || downloadStarted) return;
     setDownloadStarting(true);
-    setMatchMessage('Payment verified. Starting your original downloads…');
+    setMatchMessage('Payment verified. Preparing your original photos…');
     try {
-      for (let i = 0; i < selected.length; i++) {
-        const a = document.createElement('a');
-        a.href = `/api/orders/${approvedOrderId}/download?photoId=${encodeURIComponent(selected[i])}`;
-        a.target = '_blank';
-        a.rel = 'noopener';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        if (i < selected.length - 1) await new Promise((r) => setTimeout(r, 900));
+      const response = await fetch(`/api/orders/${approvedOrderId}/download-zip`, {
+        method: 'GET',
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        let message = 'Could not prepare your photo download.';
+        try {
+          const body = await response.json();
+          message = body.error || message;
+        } catch {}
+        throw new Error(message);
       }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SMF-Photos-${approvedOrderId.slice(0, 8)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+
       setDownloadStarted(true);
-      setMatchMessage(`${selected.length} original download${selected.length === 1 ? '' : 's'} started.`);
+      setMatchMessage(`${selected.length} original photo${selected.length === 1 ? '' : 's'} downloaded as one ZIP.`);
+    } catch (error) {
+      setMatchMessage(error?.message || 'Could not start the photo download.');
     } finally {
       setDownloadStarting(false);
     }
