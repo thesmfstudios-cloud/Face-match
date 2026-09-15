@@ -1,12 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
-import { ArrowRight, Camera, Check, CheckCircle2, ImagePlus, IndianRupee, Lock, Search, ShieldCheck, Sparkles, Upload, X, Loader2, RefreshCw, ExternalLink, Video } from 'lucide-react';
+import { ArrowRight, Camera, Check, CheckCircle2, ImagePlus, IndianRupee, Lock, Search, ShieldCheck, Sparkles, Upload, X, Loader2, RefreshCw, Video } from 'lucide-react';
 import { getSupabaseBrowser } from '../lib/supabase-browser';
 
 const EVENT_SLUG = 'sam-college-2026';
-const UPI_ID = '9200010123@ybl';
 const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
 
 const DEMO_PHOTOS = [
@@ -29,7 +27,7 @@ export default function Home() {
   const [matchMessage, setMatchMessage] = useState('');
   const [selected, setSelected] = useState([]);
   const [paymentOpen, setPaymentOpen] = useState(false);
-  const [utr, setUtr] = useState('');
+  const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentSent, setPaymentSent] = useState(false);
   const [orderId, setOrderId] = useState('');
   const [dataError, setDataError] = useState('');
@@ -156,7 +154,6 @@ export default function Home() {
           console.warn('Could not scan photo', photo.id, err);
         }
       }
-      setPhotos((current) => current);
       setMatched(true);
       setMatching(false);
       setMatchMessage(results.length ? `${results.length} matching photos found.` : 'No close face matches found. Try a clearer selfie or better lighting.');
@@ -175,7 +172,7 @@ export default function Home() {
   const downloadApprovedPhotos = async (approvedOrderId) => {
     if (!approvedOrderId || !selected.length || downloadStarting || downloadStarted) return;
     setDownloadStarting(true);
-    setMatchMessage('Payment approved. Starting your original downloads…');
+    setMatchMessage('Payment verified. Starting your original downloads…');
     try {
       for (let i = 0; i < selected.length; i++) {
         const a = document.createElement('a');
@@ -195,44 +192,79 @@ export default function Home() {
   };
 
   const submitPayment = async () => {
-    if (!utr.trim() || !selected.length) return;
+    if (!selected.length || paymentLoading) return;
+    setPaymentLoading(true);
+    setPaymentOpen(false);
+    setMatchMessage('Opening secure Razorpay checkout…');
+
     try {
-      const res = await fetch('/api/orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventSlug: EVENT_SLUG, selectedPhotoIds: selected, total, utr: utr.trim() }) });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error || 'Payment submission failed.');
-      setOrderId(body.order?.id || '');
-      setPaymentSent(true);
-      setPaymentOpen(false);
-      setUtr('');
-    } catch (err) {
-      setMatchMessage(err?.message || 'Payment submission failed.');
+      const scriptLoaded = await loadRazorpayScript();
+      if (!scriptLoaded || !window.Razorpay) throw new Error('Razorpay checkout could not be loaded.');
+
+      const createRes = await fetch('/api/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventSlug: EVENT_SLUG, selectedPhotoIds: selected }),
+      });
+      const createBody = await createRes.json();
+      if (!createRes.ok) throw new Error(createBody.error || 'Could not create payment order.');
+
+      const options = {
+        key: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
+        amount: createBody.amount,
+        currency: createBody.currency,
+        name: 'SMF Studios',
+        description: `${selected.length} event photo${selected.length === 1 ? '' : 's'}`,
+        order_id: createBody.order_id,
+        handler: async (response) => {
+          try {
+            setMatchMessage('Verifying payment securely…');
+            const verifyRes = await fetch('/api/verify-payment', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                eventSlug: EVENT_SLUG,
+                selectedPhotoIds: selected,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_signature: response.razorpay_signature,
+              }),
+            });
+            const verifyBody = await verifyRes.json();
+            if (!verifyRes.ok || !verifyBody.ok) throw new Error(verifyBody.error || 'Payment verification failed.');
+
+            const approvedId = verifyBody.order?.id;
+            setOrderId(approvedId || '');
+            setPaymentSent(true);
+            setPaymentLoading(false);
+            if (approvedId) await downloadApprovedPhotos(approvedId);
+          } catch (error) {
+            setPaymentLoading(false);
+            setMatchMessage(error?.message || 'Payment verification failed.');
+          }
+        },
+        modal: {
+          backdropclose: false,
+          ondismiss: () => {
+            setPaymentLoading(false);
+            setMatchMessage('Payment cancelled.');
+          },
+        },
+        notes: { event: EVENT_SLUG },
+        theme: { color: '#111111' },
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.on('payment.failed', (response) => {
+        setPaymentLoading(false);
+        setMatchMessage(response?.error?.description || 'Payment failed. Please try again.');
+      });
+      rzp.open();
+    } catch (error) {
+      setPaymentLoading(false);
+      setMatchMessage(error?.message || 'Could not start Razorpay checkout.');
     }
   };
-
-  useEffect(() => {
-    if (!orderId || !paymentSent || downloadStarted) return undefined;
-    let cancelled = false;
-    let timer;
-    const check = async () => {
-      try {
-        const res = await fetch(`/api/orders/${orderId}/status`, { cache: 'no-store' });
-        const body = await res.json();
-        const status = body.order?.status;
-        if (cancelled) return;
-        if (status === 'approved' || status === 'fulfilled') {
-          await downloadApprovedPhotos(orderId);
-          return;
-        }
-        if (status === 'rejected') {
-          setMatchMessage('Payment was not approved. Please contact the event photographer.');
-          return;
-        }
-      } catch {}
-      if (!cancelled) timer = setTimeout(check, 5000);
-    };
-    check();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [orderId, paymentSent, downloadStarted, selected]);
 
   const displayPhotos = matched && photos.length ? photos.filter((p) => !p.no_match) : livePhotos;
   const eventName = event?.name || 'SAM College · 14 September 2026';
@@ -251,16 +283,34 @@ export default function Home() {
 
       {dataError && <div className="notice">{dataError}</div>}
       {matchMessage && <div className={`notice ${matchMessage.includes('found') ? 'successNotice' : ''}`}>{matchMessage}</div>}
-      {paymentSent && <div className="notice successNotice"><CheckCircle2 size={17}/> Payment submitted. UTR recorded. Originals will start downloading automatically after admin approval.{orderId && <> Order: <code>{orderId}</code></>}</div>}
+      {paymentSent && <div className="notice successNotice"><CheckCircle2 size={17}/> Payment verified successfully. Your original downloads are starting now.{orderId && <> Order: <code>{orderId}</code></>}</div>}
 
-      {!matched ? <section className="howItWorks"><div className="howIntro"><span className="eyebrow">HOW IT WORKS</span><h2>One selfie. Your gallery.</h2></div><div className="howGrid"><Feature icon={<Search/>} n="01" title="Match your face" copy="Your selfie is compared with faces detected in event photos."/><Feature icon={<Lock/>} n="02" title="Preview securely" copy="Customers receive a clear, downscaled preview that can be downloaded for free; the full-resolution original stays private."/><Feature icon={<IndianRupee/>} n="03" title="Buy what you want" copy="₹5 single photo · ₹20 group photo · free preview download · originals unlock after approval."/></div></section> : <section className="resultsSection"><div className="resultHeader"><div><span className="eyebrow">MATCH RESULTS</span><h2>Your photos <span>· {displayPhotos.length} matches</span></h2></div><div className="resultTrust"><Lock size={14}/> Originals locked</div></div><div className="photoGrid">{displayPhotos.map((p) => <div key={p.id} className={`photoCard ${selected.includes(p.id) ? 'chosen' : ''}`} role="button" tabIndex={0} onClick={() => toggle(p.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(p.id); } }}><img src={p.preview_url} alt="Event preview" crossOrigin="anonymous"/><div className="photoGradient"/><div className="photoBottom"><span>{Number(p.people_count || 1) > 1 ? 'Group' : 'Single'} · {p.people_count || 1} {(p.people_count || 1) === 1 ? 'face' : 'faces'}</span><b>₹{p.price || (Number(p.people_count || 1) > 1 ? 20 : 5)}</b></div>{selected.includes(p.id) && <div className="selectedBadge"><Check size={16}/></div>}<a className="previewLock" href={p.preview_url} download={p.original_filename || 'smf-preview.jpg'} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>DOWNLOAD FREE PREVIEW</a></div>)}</div><div className="pricingRow"><div><b>Single photo</b><span>₹5</span></div><div><b>Group photo</b><span>₹20</span></div><div className="pricingNote"><ShieldCheck size={18}/> Free preview download · Full-resolution originals remain private until payment approval.</div></div></section>}
+      {!matched ? <section className="howItWorks"><div className="howIntro"><span className="eyebrow">HOW IT WORKS</span><h2>One selfie. Your gallery.</h2></div><div className="howGrid"><Feature icon={<Search/>} n="01" title="Match your face" copy="Your selfie is compared with faces detected in event photos."/><Feature icon={<Lock/>} n="02" title="Preview securely" copy="Customers receive a clear, downscaled preview that can be downloaded for free; the full-resolution original stays private until verified payment."/><Feature icon={<IndianRupee/>} n="03" title="Buy what you want" copy="₹5 single photo · ₹20 group photo · free preview download · originals unlock after secure payment verification."/></div></section> : <section className="resultsSection"><div className="resultHeader"><div><span className="eyebrow">MATCH RESULTS</span><h2>Your photos <span>· {displayPhotos.length} matches</span></h2></div><div className="resultTrust"><Lock size={14}/> Originals locked</div></div><div className="photoGrid">{displayPhotos.map((p) => <div key={p.id} className={`photoCard ${selected.includes(p.id) ? 'chosen' : ''}`} role="button" tabIndex={0} onClick={() => toggle(p.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(p.id); } }}><img src={p.preview_url} alt="Event preview" crossOrigin="anonymous"/><div className="photoGradient"/><div className="photoBottom"><span>{Number(p.people_count || 1) > 1 ? 'Group' : 'Single'} · {p.people_count || 1} {(p.people_count || 1) === 1 ? 'face' : 'faces'}</span><b>₹{p.price || (Number(p.people_count || 1) > 1 ? 20 : 5)}</b></div>{selected.includes(p.id) && <div className="selectedBadge"><Check size={16}/></div>}<a className="previewLock" href={p.preview_url} download={p.original_filename || 'smf-preview.jpg'} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>DOWNLOAD FREE PREVIEW</a></div>)}</div><div className="pricingRow"><div><b>Single photo</b><span>₹5</span></div><div><b>Group photo</b><span>₹20</span></div><div className="pricingNote"><ShieldCheck size={18}/> Free preview download · Full-resolution originals remain private until payment verification.</div></div></section>}
 
-      {selected.length > 0 && <div className="checkoutBar"><div className="checkoutSummary"><b>{selected.length} selected</b><span>Original-quality downloads</span></div><div className="checkoutAction"><strong>₹{total}</strong><button className="primaryButton" onClick={() => setPaymentOpen(true)}>Pay via UPI <ArrowRight size={17}/></button></div></div>}
+      {selected.length > 0 && <div className="checkoutBar"><div className="checkoutSummary"><b>{selected.length} selected</b><span>Original-quality downloads</span></div><div className="checkoutAction"><strong>₹{total}</strong><button className="primaryButton" onClick={() => setPaymentOpen(true)} disabled={paymentLoading}>{paymentLoading ? <><Loader2 size={17} className="spin"/> Processing…</> : <>Pay securely <ArrowRight size={17}/></>}</button></div></div>}
     </> : <AdminView />}
 
     {cameraOpen && <CameraModal videoRef={videoRef} onCapture={captureCameraSelfie} onClose={stopCamera}/>} 
-    {paymentOpen && <PaymentModal amount={total} utr={utr} setUtr={setUtr} onClose={() => setPaymentOpen(false)} onSubmit={submitPayment}/>}<footer className="footer">© 2026 SMF Studio · Face Match Photo Delivery · Secure checkout</footer>
+    {paymentOpen && <PaymentModal amount={total} onClose={() => setPaymentOpen(false)} onSubmit={submitPayment}/>}<footer className="footer">© 2026 SMF Studio · Face Match Photo Delivery · Secure checkout</footer>
   </main>;
+}
+
+function loadRazorpayScript() {
+  return new Promise((resolve) => {
+    if (typeof window !== 'undefined' && window.Razorpay) return resolve(true);
+    const existing = document.querySelector('script[src="https://checkout.razorpay.com/v1/checkout.js"]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve(true), { once: true });
+      existing.addEventListener('error', () => resolve(false), { once: true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.async = true;
+    script.onload = () => resolve(true);
+    script.onerror = () => resolve(false);
+    document.body.appendChild(script);
+  });
 }
 
 async function loadImage(src, crossOrigin = false) {
@@ -273,9 +323,8 @@ function CameraModal({ videoRef, onCapture, onClose }) {
   return <div className="cameraBackdrop"><div className="cameraModal"><div className="cameraHeader"><div><div className="modalEyebrow"><Video size={14}/> CAMERA SCAN</div><h2>Take a clear selfie</h2><p>Keep your face centered and look at the camera.</p></div><button className="closeButton" onClick={onClose}><X size={19}/></button></div><div className="cameraViewport"><video ref={videoRef} autoPlay playsInline muted/></div><button className="captureButton" onClick={onCapture}><Camera size={19}/> Capture selfie</button></div></div>;
 }
 
-function PaymentModal({ amount, utr, setUtr, onClose, onSubmit }) {
-  const payLink = `upi://pay?pa=${encodeURIComponent(UPI_ID)}&pn=SMF%20Studio&am=${amount}&cu=INR&tn=Photo%20Match`;
-  return <div className="modalBackdrop"><div className="paymentModal"><button className="closeButton" onClick={onClose}><X size={19}/></button><div className="modalEyebrow"><IndianRupee size={15}/> UPI PAYMENT</div><h2>Pay ₹{amount}</h2><p>Scan the QR below, pay using your UPI app, then enter the UTR / transaction ID.</p><div className="qrBox"><QRCodeSVG value={payLink} size={190} includeMargin/></div><a className="upiPayButton" href={payLink}>Open UPI App <ExternalLink size={15}/></a><div className="upiId"><span>UPI ID</span><b>{UPI_ID}</b></div><label className="utrLabel">Transaction / UTR number<input value={utr} onChange={(e) => setUtr(e.target.value)} placeholder="Enter UTR after payment"/></label><button className="primaryButton wide" disabled={!utr.trim()} onClick={onSubmit}>Submit payment proof <ArrowRight size={17}/></button><div className="modalFoot"><ShieldCheck size={14}/> Originals unlock only after admin verification.</div></div></div>;
+function PaymentModal({ amount, onClose, onSubmit }) {
+  return <div className="modalBackdrop"><div className="paymentModal"><button className="closeButton" onClick={onClose}><X size={19}/></button><div className="modalEyebrow"><IndianRupee size={15}/> SECURE CHECKOUT</div><h2>Pay ₹{amount}</h2><p>Continue to Razorpay for UPI, cards and other supported payment methods. Payment is verified securely on our server before originals are unlocked.</p><div className="checkoutPreview"><ShieldCheck size={18}/><div><b>Automatic verification</b><span>No UTR or manual payment proof required.</span></div></div><button className="primaryButton wide" onClick={onSubmit}>Continue to Razorpay <ArrowRight size={17}/></button><div className="modalFoot"><ShieldCheck size={14}/> Full-resolution originals unlock only after successful payment verification.</div></div></div>;
 }
 
 function AdminView() {
@@ -316,7 +365,7 @@ function AdminView() {
     setOrders((current) => current.map((o) => o.id === id ? { ...o, status } : o));
   };
 
-  return <section className="adminPage"><div className="adminHeader"><div><span className="eyebrow">ADMIN CONSOLE</span><h1>Event photo manager</h1><p>Upload originals, generate private previews, review UPI payments and publish a customer link.</p></div><div className="ready"><CheckCircle2 size={16}/> System ready</div></div><div className="adminAccess"><Lock size={16}/><input type="password" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Admin access code"/><span>Server-only access</span></div><div className="adminGrid"><div className="uploadPanel"><div className="uploadIcon"><ImagePlus size={30}/></div><h2>Upload event originals</h2><p>Files are sent to the private <code>fm-originals</code> bucket. A smaller preview is created server-side.</p><input ref={ref} hidden type="file" multiple accept="image/*" onChange={(e) => setFiles(e.target.files || [])}/><button onClick={() => ref.current?.click()} className="darkButton"><Upload size={17}/> Choose photos</button>{files.length > 0 && <button onClick={upload} className="primaryButton adminUpload" disabled={uploading || !code}>{uploading ? <><Loader2 size={17} className="spin"/> Uploading…</> : <>Upload {files.length} photos <ArrowRight size={17}/></>}</button>}{result && <div className="uploadSuccess"><CheckCircle2 size={16}/> {result}</div>}</div><div className="workflowPanel"><div className="panelTitle">Production workflow</div><Workflow n="01" t="Upload originals" s="Live"/><Workflow n="02" t="Generate downscaled previews" s="Server"/><Workflow n="03" t="Customer face matching" s="Browser AI"/><Workflow n="04" t="Approve UPI payments" s="Manual"/></div></div><div className="ordersPanel"><div className="ordersHead"><div><div className="panelTitle">Payment queue</div><p>Approve only after checking the UTR in your UPI/bank app.</p></div><button className="refreshButton" disabled={!code || loadingOrders} onClick={loadOrders}>{loadingOrders ? <Loader2 size={16} className="spin"/> : <RefreshCw size={16}/>} Refresh</button></div>{orders.length === 0 ? <div className="emptyOrders">No payment submissions loaded yet.</div> : <div className="ordersTable">{orders.map((o) => <div className="orderRow" key={o.id}><div><b>{o.id.slice(0, 8)}…</b><span>UTR {o.utr}</span></div><div><strong>₹{o.total}</strong><span>{new Date(o.created_at).toLocaleString()}</span></div><div className="orderStatus">{o.status}</div><div className="orderActions">{o.status === 'payment_submitted' && <><button onClick={() => review(o.id, 'approved')}>Approve</button><button onClick={() => review(o.id, 'rejected')}>Reject</button></>}</div></div>)}</div>}</div><div className="securityCallout"><ShieldCheck size={19}/><div><b>Private originals</b><p>Customers never query the original bucket. The original-path stays server-side and can be used for signed downloads after an approved order.</p></div></div></section>;
+  return <section className="adminPage"><div className="adminHeader"><div><span className="eyebrow">ADMIN CONSOLE</span><h1>Event photo manager</h1><p>Upload originals, generate private previews, and monitor completed Razorpay orders.</p></div><div className="ready"><CheckCircle2 size={16}/> System ready</div></div><div className="adminAccess"><Lock size={16}/><input type="password" value={code} onChange={(e) => setCode(e.target.value)} placeholder="Admin access code"/><span>Server-only access</span></div><div className="adminGrid"><div className="uploadPanel"><div className="uploadIcon"><ImagePlus size={30}/></div><h2>Upload event originals</h2><p>Files are sent to the private <code>fm-originals</code> bucket. A smaller preview is created server-side.</p><input ref={ref} hidden type="file" multiple accept="image/*" onChange={(e) => setFiles(e.target.files || [])}/><button onClick={() => ref.current?.click()} className="darkButton"><Upload size={17}/> Choose photos</button>{files.length > 0 && <button onClick={upload} className="primaryButton adminUpload" disabled={uploading || !code}>{uploading ? <><Loader2 size={17} className="spin"/> Uploading…</> : <>Upload {files.length} photos <ArrowRight size={17}/></>}</button>}{result && <div className="uploadSuccess"><CheckCircle2 size={16}/> {result}</div>}</div><div className="workflowPanel"><div className="panelTitle">Production workflow</div><Workflow n="01" t="Upload originals" s="Live"/><Workflow n="02" t="Generate downscaled previews" s="Server"/><Workflow n="03" t="Customer face matching" s="Browser AI"/><Workflow n="04" t="Verify Razorpay payments" s="Automatic"/></div></div><div className="ordersPanel"><div className="ordersHead"><div><div className="panelTitle">Payment queue</div><p>Razorpay payments are verified server-side; completed orders appear here automatically.</p></div><button className="refreshButton" disabled={!code || loadingOrders} onClick={loadOrders}>{loadingOrders ? <Loader2 size={16} className="spin"/> : <RefreshCw size={16}/>} Refresh</button></div>{orders.length === 0 ? <div className="emptyOrders">No completed payment orders loaded yet.</div> : <div className="ordersTable">{orders.map((o) => <div className="orderRow" key={o.id}><div><b>{o.id.slice(0, 8)}…</b><span>Payment {o.utr}</span></div><div><strong>₹{o.total}</strong><span>{new Date(o.created_at).toLocaleString()}</span></div><div className="orderStatus">{o.status}</div><div className="orderActions">{o.status === 'payment_submitted' && <><button onClick={() => review(o.id, 'approved')}>Approve</button><button onClick={() => review(o.id, 'rejected')}>Reject</button></>}</div></div>)}</div>}</div><div className="securityCallout"><ShieldCheck size={19}/><div><b>Private originals</b><p>Customers never query the original bucket. The original-path stays server-side and can be used for signed downloads after verified payment.</p></div></div></section>;
 }
 
 function Workflow({ n, t, s }) { return <div className="workflowStep"><span className="stepNum">{n}</span><div><b>{t}</b></div><span className="stepStatus">{s}</span></div>; }
