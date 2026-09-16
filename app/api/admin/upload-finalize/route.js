@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { indexMissingPhotos } from '../../../../lib/rekognition-indexer';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,14 +34,32 @@ export async function POST(request) {
       price: 5,
     }));
 
-    // upload-url already filters duplicates before signed uploads are issued.
-    // Do a normal insert here because the unique file_hash index is partial;
-    // Postgres cannot infer that partial index from ON CONFLICT (event_id,file_hash).
-    const { data, error } = await supabase.from('fm_photos').insert(rows).select('id,original_filename,preview_path,people_count,price,processing_status');
+    const { data, error } = await supabase
+      .from('fm_photos')
+      .insert(rows)
+      .select('id,original_filename,preview_path,people_count,price,processing_status');
     if (error) throw error;
+
     const { error: refreshError } = await supabase.rpc('fm_refresh_event_photo_count', { p_event_id: event.id });
     if (refreshError) throw refreshError;
-    return NextResponse.json({ ok: true, count: data?.length || 0, photos: data || [] });
+
+    // Start indexing immediately, but only for a small batch. The remaining
+    // photos continue through the admin AI index page without making a large
+    // upload request run for the duration of the whole event.
+    let index = null;
+    try {
+      index = await indexMissingPhotos(eventSlug, { limit: 10, concurrency: 5 });
+    } catch (indexError) {
+      console.error('Initial Rekognition indexing could not start:', indexError);
+      index = { started: false, error: indexError?.message || 'AI indexing could not start yet.' };
+    }
+
+    return NextResponse.json({
+      ok: true,
+      count: data?.length || 0,
+      photos: data || [],
+      ai: index,
+    });
   } catch (error) {
     console.error(error);
     return NextResponse.json({ error: error?.message || 'Could not finalize uploads.' }, { status: 500 });
