@@ -7,6 +7,7 @@ import { getSupabaseBrowser } from '../lib/supabase-browser';
 const EVENT_SLUG = 'sam-college-2026';
 const INDEX_RETRY_DELAY = 3000;
 const MAX_INDEX_RETRIES = 30;
+const PAID_ORDER_STORAGE_KEY = `fm_paid_order_${EVENT_SLUG}`;
 
 export default function Home() {
   const [mode, setMode] = useState('customer');
@@ -59,7 +60,7 @@ export default function Home() {
 
         const mapped = (p || []).map((row) => ({
           ...row,
-          preview_url: `${supabase.storage.from('fm-previews').getPublicUrl(row.preview_path).data.publicUrl}?v=${Date.now()}` ,
+          preview_url: `${supabase.storage.from('fm-previews').getPublicUrl(row.preview_path).data.publicUrl}?v=${Date.now()}`,
         }));
         if (active) {
           setEvent(e);
@@ -71,6 +72,48 @@ export default function Home() {
       }
     })();
     return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const recoverPaidOrder = async () => {
+      if (typeof window === 'undefined') return;
+      try {
+        const raw = window.localStorage.getItem(PAID_ORDER_STORAGE_KEY);
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        if (!saved?.orderId) return;
+
+        const res = await fetch(`/api/orders/${saved.orderId}/status`, { cache: 'no-store' });
+        const body = await res.json().catch(() => ({}));
+        if (cancelled || !res.ok || !body?.order) return;
+
+        const status = body.order.status;
+        if (status !== 'approved' && status !== 'fulfilled') {
+          if (status === 'rejected') window.localStorage.removeItem(PAID_ORDER_STORAGE_KEY);
+          return;
+        }
+
+        const restoredIds = Array.isArray(body.order.selected_photo_ids)
+          ? body.order.selected_photo_ids.map(String)
+          : [];
+        setOrderId(body.order.id);
+        setPaymentSent(true);
+        setPaymentLoading(false);
+        if (restoredIds.length) setSelected(restoredIds);
+        setMatchMessage(
+          restoredIds.length
+            ? `Payment already verified for ${restoredIds.length} photo${restoredIds.length === 1 ? '' : 's'}. Your originals are ready to download.`
+            : 'Payment already verified. Your original photos are ready to download.'
+        );
+      } catch (error) {
+        console.warn('Could not recover paid order:', error);
+      }
+    };
+
+    recoverPaidOrder();
+    return () => { cancelled = true; };
   }, []);
 
   const stopCamera = () => {
@@ -228,33 +271,27 @@ export default function Home() {
   const downloadApprovedPhotos = async (approvedOrderId) => {
     if (!approvedOrderId || !selected.length || downloadStarting || downloadStarted) return;
     setDownloadStarting(true);
-    setMatchMessage('Payment verified. Preparing your original photos…');
+    setMatchMessage('Payment verified. Starting your original download…');
     try {
-      const response = await fetch(`/api/orders/${approvedOrderId}/download-zip`, { method: 'GET', cache: 'no-store' });
-      if (!response.ok) {
-        let message = 'Could not prepare your photo download.';
-        try {
-          const body = await response.json();
-          message = body.error || message;
-        } catch {}
-        throw new Error(message);
-      }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `SMF-Photos-${approvedOrderId.slice(0, 8)}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      window.location.href = `/api/orders/${approvedOrderId}/download-zip`;
       setDownloadStarted(true);
-      setMatchMessage(`${selected.length} original photo${selected.length === 1 ? '' : 's'} downloaded as one ZIP.`);
+      setMatchMessage(`${selected.length} original photo${selected.length === 1 ? '' : 's'} download started.`);
     } catch (error) {
       setMatchMessage(error?.message || 'Could not start the photo download.');
     } finally {
       setDownloadStarting(false);
     }
+  };
+
+  const rememberApprovedOrder = (approvedOrderId, photoIds) => {
+    if (typeof window === 'undefined' || !approvedOrderId) return;
+    try {
+      window.localStorage.setItem(PAID_ORDER_STORAGE_KEY, JSON.stringify({
+        orderId: approvedOrderId,
+        selectedPhotoIds: photoIds,
+        savedAt: Date.now(),
+      }));
+    } catch {}
   };
 
   const submitPayment = async () => {
@@ -307,7 +344,10 @@ export default function Home() {
             setPaymentSent(true);
             setMatchMessage('Payment verified. Starting your original downloads…');
             setPaymentLoading(false);
-            if (approvedId) await downloadApprovedPhotos(approvedId);
+            if (approvedId) {
+              rememberApprovedOrder(approvedId, selected);
+              await downloadApprovedPhotos(approvedId);
+            }
           } catch (error) {
             setPaymentLoading(false);
             setMatchMessage(error?.message || 'Payment verification failed.');
@@ -336,7 +376,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (!orderId || !paymentSent || downloadStarted) return undefined;
+    if (!orderId || !paymentSent || downloadStarted || !selected.length) return undefined;
     let cancelled = false;
     let timer;
     const check = async () => {
@@ -377,11 +417,12 @@ export default function Home() {
 
       {dataError && <div className="notice">{dataError}</div>}
       {matchMessage && <div className={`notice ${matchMessage.includes('found') ? 'successNotice' : ''}`}>{matchMessage}</div>}
-      {paymentSent && <div className="notice successNotice"><CheckCircle2 size={17}/> Payment verified successfully. Your original downloads are starting now.{orderId && <> Order: <code>{orderId}</code></>}</div>}
+      {paymentSent && <div className="notice successNotice"><CheckCircle2 size={17}/> Payment verified successfully. Your original downloads are ready.{orderId && <> Order: <code>{orderId}</code></>}</div>}
+      {paymentSent && orderId && !downloadStarted && <div className="notice downloadRecoveryNotice"><div><b>Originals ready</b><span>Your payment is already verified. You can retry the download anytime without paying again.</span></div><button type="button" className="primaryButton" onClick={() => downloadApprovedPhotos(orderId)} disabled={downloadStarting || !selected.length}>{downloadStarting ? <><Loader2 size={17} className="spin"/> Preparing…</> : <>Download Originals <ArrowRight size={17}/></>}</button></div>}
 
       {!matched ? <section className="howItWorks"><div className="howIntro"><span className="eyebrow">HOW IT WORKS</span><h2>One selfie. Your gallery.</h2></div><div className="howGrid"><Feature icon={<Search/>} n="01" title="Match your face" copy="Your selfie is compared with faces detected in event photos."/><Feature icon={<Lock/>} n="02" title="Preview securely" copy="Customers receive a clear, downscaled preview that can be downloaded for free; the full-resolution original stays private until verified payment."/><Feature icon={<IndianRupee/>} n="03" title="Buy what you want" copy="₹5 single photo · ₹15 group photo · free preview download · originals unlock after secure payment verification."/></div></section> : <section className="resultsSection"><div className="resultHeader"><div><span className="eyebrow">MATCH RESULTS</span><h2>Your photos <span>· {displayPhotos.length} matches</span></h2></div><div className="resultTrust"><Lock size={14}/> Originals locked</div></div><div className="photoGrid">{displayPhotos.map((p) => <div key={p.id} className={`photoCard ${selected.includes(p.id) ? 'chosen' : ''}`} role="button" tabIndex={0} onClick={() => toggle(p.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(p.id); } }}><img src={p.preview_url} alt="Event preview" crossOrigin="anonymous"/><div className="photoGradient"/><div className="photoBottom"><span>{Number(p.people_count || 1) > 1 ? 'Group' : 'Single'} · {p.people_count || 1} {(p.people_count || 1) === 1 ? 'face' : 'faces'}</span><b>₹{p.price || (Number(p.people_count || 1) > 1 ? 15 : 5)}</b></div>{selected.includes(p.id) && <div className="selectedBadge"><Check size={16}/></div>}<a className="previewLock" href={p.preview_url} download={p.original_filename || 'smf-preview.jpg'} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>DOWNLOAD FREE PREVIEW</a></div>)}</div><div className="pricingRow"><div><b>Single photo</b><span>₹5</span></div><div><b>Group photo</b><span>₹15</span></div><div className="pricingNote"><ShieldCheck size={18}/> Free preview download · Full-resolution originals remain private until payment verification.</div></div></section>}
 
-      {selected.length > 0 && <div className="checkoutBar"><div className="checkoutSummary"><b>{selected.length} selected</b><span>Original-quality downloads</span></div><div className="checkoutAction"><strong>₹{total}</strong><button className="primaryButton" onClick={() => setPaymentOpen(true)} disabled={paymentLoading}>{paymentLoading ? <><Loader2 size={17} className="spin"/> Processing…</> : <>Pay securely <ArrowRight size={17}/></>}</button></div></div>}
+      {selected.length > 0 && !paymentSent && <div className="checkoutBar"><div className="checkoutSummary"><b>{selected.length} selected</b><span>Original-quality downloads</span></div><div className="checkoutAction"><strong>₹{total}</strong><button className="primaryButton" onClick={() => setPaymentOpen(true)} disabled={paymentLoading}>{paymentLoading ? <><Loader2 size={17} className="spin"/> Processing…</> : <>Pay securely <ArrowRight size={17}/></>}</button></div></div>}
     </> : null}
 
     {cameraOpen && <CameraModal videoRef={videoRef} onCapture={captureCameraSelfie} onClose={stopCamera}/>} 
