@@ -25,11 +25,6 @@ export async function POST(request) {
     const photoIds = Array.isArray(body.selectedPhotoIds)
       ? [...new Set(body.selectedPhotoIds.filter(Boolean).map(String))]
       : [];
-    const groupPhotoIds = new Set(
-      Array.isArray(body.groupPhotoIds)
-        ? body.groupPhotoIds.filter(Boolean).map(String)
-        : []
-    );
 
     if (!eventSlug || !photoIds.length) {
       return NextResponse.json({ error: 'Select at least one photo.' }, { status: 400 });
@@ -47,7 +42,7 @@ export async function POST(request) {
 
     const { data: photos, error: photoError } = await supabase
       .from('fm_photos')
-      .select('id,processing_status')
+      .select('id,processing_status,people_count')
       .eq('event_id', event.id)
       .in('id', photoIds);
 
@@ -59,7 +54,9 @@ export async function POST(request) {
       return NextResponse.json({ error: 'One or more selected photos are not ready.' }, { status: 400 });
     }
 
-    const total = photos.reduce((sum, photo) => sum + (groupPhotoIds.has(String(photo.id)) ? 15 : 5), 0);
+    // Server-side source of truth: every photo containing more than one
+    // detected person costs ₹15; single-person photos cost ₹5.
+    const total = photos.reduce((sum, photo) => sum + (Number(photo.people_count || 1) > 1 ? 15 : 5), 0);
     const amount = Math.round(total * 100);
     if (!Number.isInteger(amount) || amount < 100) {
       return NextResponse.json({ error: 'Invalid payment amount.' }, { status: 400 });
@@ -73,8 +70,6 @@ export async function POST(request) {
       notes: { event: eventSlug.slice(0, 256), photo_count: String(photoIds.length) },
     });
 
-    // Return the exact public Key ID used by the server to create this order.
-    // This prevents test/live key mismatches between the checkout and the order.
     return NextResponse.json({
       order_id: order.id,
       amount: order.amount,
