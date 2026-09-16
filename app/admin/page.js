@@ -6,7 +6,23 @@ import { getSupabaseBrowser } from '../../lib/supabase-browser';
 
 const EVENT_SLUG = 'sam-college-2026';
 const MAX_BATCH = 500;
-const REQUEST_CHUNK = 20;
+const REQUEST_CHUNK = 10;
+
+function getErrorMessage(error) {
+  if (!error) return 'Unknown upload error.';
+  const parts = [error?.message, error?.name, error?.statusCode, error?.status, error?.code]
+    .filter((value) => value !== undefined && value !== null && String(value).trim())
+    .map(String);
+  const unique = [...new Set(parts)];
+  return unique.length ? unique.join(' · ') : String(error);
+}
+
+async function sha256(file) {
+  if (!file || typeof file.arrayBuffer !== 'function') throw new Error('Invalid photo file.');
+  if (!globalThis.crypto?.subtle) throw new Error('Secure browser crypto is unavailable. Reload the HTTPS admin page.');
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 export default function AdminUploadPage() {
   const inputRef = useRef(null);
@@ -32,7 +48,7 @@ export default function AdminUploadPage() {
       if (!res.ok) throw new Error(body.error || 'Could not load photo library.');
       setLibrary(body);
     } catch (error) {
-      setStatus(`Library failed: ${error?.message || 'Unknown error'}`);
+      setStatus(`Library failed: ${getErrorMessage(error)}`);
     } finally {
       setLoadingLibrary(false);
     }
@@ -56,7 +72,7 @@ export default function AdminUploadPage() {
       setLibrary(null);
       setStatus(`✓ Deleted ${body.deleted?.originals || 0} originals and ${body.deleted?.previews || 0} previews. Event photo library is now empty.`);
     } catch (error) {
-      setStatus(`Delete failed: ${error?.message || 'Unknown error'}`);
+      setStatus(`Delete failed: ${getErrorMessage(error)}`);
     } finally {
       setDeletingAll(false);
     }
@@ -66,13 +82,16 @@ export default function AdminUploadPage() {
     if (!code || !files.length || busy) return;
     setBusy(true);
     const selected = files.slice(0, MAX_BATCH);
-    const uploaded = [];
+    let uploadedCount = 0;
     let skippedCount = 0;
+    let currentFileName = '';
+
     try {
       setStatus(`Checking ${selected.length} photos for duplicates…`);
       const prepared = [];
       for (let i = 0; i < selected.length; i++) {
         const file = selected[i];
+        currentFileName = file.name;
         setStatus(`Checking ${i + 1}/${selected.length}: ${file.name}`);
         prepared.push({ file, hash: await sha256(file) });
       }
@@ -91,56 +110,88 @@ export default function AdminUploadPage() {
       for (let offset = 0; offset < uniquePrepared.length; offset += REQUEST_CHUNK) {
         const chunk = uniquePrepared.slice(offset, offset + REQUEST_CHUNK);
         setStatus(`Preparing photos ${offset + 1}-${Math.min(offset + REQUEST_CHUNK, uniquePrepared.length)} of ${uniquePrepared.length}…`);
+
         const urlRes = await fetch('/api/admin/upload-url', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
           body: JSON.stringify({
             eventSlug: EVENT_SLUG,
-            files: chunk.map((item, index) => ({ name: item.file.name, type: item.file.type, size: item.file.size, hash: item.hash, index })),
+            files: chunk.map((item, index) => ({
+              name: item.file.name,
+              type: item.file.type,
+              size: item.file.size,
+              hash: item.hash,
+              index,
+            })),
           }),
         });
+
         const urlText = await urlRes.text();
         let urlBody;
         try { urlBody = JSON.parse(urlText); } catch { throw new Error(urlText.slice(0, 180) || `Server error (${urlRes.status})`); }
-        if (!urlRes.ok) throw new Error(urlBody.error || 'Could not prepare upload.');
+        if (!urlRes.ok) throw new Error(urlBody.error || `Could not prepare upload (${urlRes.status}).`);
         if (!Array.isArray(urlBody.uploads)) throw new Error('Upload preparation returned an invalid response.');
         skippedCount += Array.isArray(urlBody.skipped) ? urlBody.skipped.length : 0;
 
         const supabase = getSupabaseBrowser();
+        const uploadedChunk = [];
+
         for (const u of urlBody.uploads) {
           const item = chunk[u.index];
           if (!item) throw new Error('Upload preparation returned an invalid file index.');
           const overallIndex = offset + u.index + 1;
+          currentFileName = item.file.name;
           setStatus(`Uploading ${overallIndex}/${uniquePrepared.length}: ${item.file.name}`);
-          const original = await supabase.storage.from('fm-originals').uploadToSignedUrl(u.originalPath, u.originalToken, item.file, { contentType: item.file.type || 'image/jpeg' });
-          if (original.error) throw original.error;
-          const previewFile = await makePreview(item.file);
-          const preview = await supabase.storage.from('fm-previews').uploadToSignedUrl(u.previewPath, u.previewToken, previewFile, { contentType: 'image/jpeg' });
-          if (preview.error) throw preview.error;
-          uploaded.push({ name: u.name, fileHash: u.fileHash || item.hash, originalPath: u.originalPath, previewPath: u.previewPath });
+
+          const original = await supabase.storage
+            .from('fm-originals')
+            .uploadToSignedUrl(
+              u.originalPath,
+              u.originalToken,
+              item.file,
+              { contentType: item.file.type || 'image/jpeg' },
+            );
+
+          if (original.error) {
+            throw new Error(`Original upload failed: ${getErrorMessage(original.error)}`);
+          }
+
+          uploadedChunk.push({
+            name: u.name,
+            fileHash: u.fileHash || item.hash,
+            originalPath: u.originalPath,
+            previewPath: u.previewPath,
+          });
         }
+
+        if (uploadedChunk.length) {
+          setStatus(`Finalizing ${offset + 1}-${Math.min(offset + uploadedChunk.length, uniquePrepared.length)} of ${uniquePrepared.length}…`);
+          const finalRes = await fetch('/api/admin/upload-finalize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
+            body: JSON.stringify({ eventSlug: EVENT_SLUG, uploads: uploadedChunk }),
+          });
+          const finalText = await finalRes.text();
+          let finalBody;
+          try { finalBody = JSON.parse(finalText); } catch { throw new Error(finalText.slice(0, 180) || `Finalize error (${finalRes.status})`); }
+          if (!finalRes.ok) throw new Error(finalBody.error || `Could not finalize upload (${finalRes.status}).`);
+          uploadedCount += Number(finalBody.count || uploadedChunk.length);
+        }
+
+        setStatus(`✓ Uploaded ${uploadedCount}/${uniquePrepared.length}${skippedCount ? ` · ${skippedCount} skipped` : ''}`);
       }
 
-      if (!uploaded.length) {
+      if (!uploadedCount) {
         setStatus(`✓ No new photos uploaded. ${skippedCount} duplicate photo${skippedCount === 1 ? '' : 's'} skipped automatically.`);
       } else {
-        setStatus(`Finalizing ${uploaded.length} new photos…`);
-        const finalRes = await fetch('/api/admin/upload-finalize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-admin-code': code },
-          body: JSON.stringify({ eventSlug: EVENT_SLUG, uploads: uploaded }),
-        });
-        const finalText = await finalRes.text();
-        let finalBody;
-        try { finalBody = JSON.parse(finalText); } catch { throw new Error(finalText.slice(0, 180) || `Finalize error (${finalRes.status})`); }
-        if (!finalRes.ok) throw new Error(finalBody.error || 'Could not finalize upload.');
-        setStatus(`✓ ${finalBody.count} new photos uploaded. ${skippedCount ? `${skippedCount} duplicate${skippedCount === 1 ? '' : 's'} skipped automatically.` : ''}`.trim());
+        setStatus(`✓ ${uploadedCount} new photos uploaded.${skippedCount ? ` ${skippedCount} duplicate${skippedCount === 1 ? '' : 's'} skipped automatically.` : ''}`);
       }
+
       setFiles([]);
       if (inputRef.current) inputRef.current.value = '';
       await loadLibrary();
     } catch (error) {
-      setStatus(`Upload failed: ${error?.message || 'Unknown error'}`);
+      setStatus(`Upload failed${currentFileName ? ` · ${currentFileName}` : ''}: ${getErrorMessage(error)}`);
     } finally {
       setBusy(false);
     }
@@ -214,50 +265,4 @@ export default function AdminUploadPage() {
 
 function LibraryStat({ label, value, detail }) {
   return <div style={{ padding: 15, borderRight: '1px solid #33322f', background: '#11110f', minWidth: 0 }}><div style={{ fontSize: 8, letterSpacing: '.14em', color: '#77746d', display: 'flex', alignItems: 'center', gap: 5 }}>{label === 'SPACE REMAINING' && <HardDrive size={12}/>} {label}</div><div style={{ marginTop: 6, fontSize: 17, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div><div style={{ marginTop: 4, fontSize: 8, color: '#77746d', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{detail}</div></div>;
-}
-
-async function sha256(file) {
-  const buffer = await file.arrayBuffer();
-  const digest = await crypto.subtle.digest('SHA-256', buffer);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function makePreview(file) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = async () => {
-      URL.revokeObjectURL(url);
-      const MAX_BYTES = 35 * 1024;
-      const TARGET_BYTES = 25 * 1024;
-      let max = 900;
-      let quality = 0.48;
-      let blob = null;
-      try {
-        for (let attempt = 0; attempt < 18; attempt++) {
-          const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
-          canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-          const ctx = canvas.getContext('2d', { alpha: false });
-          ctx.filter = 'blur(3px)';
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', quality));
-          if (!blob) throw new Error('Could not create preview.');
-          if (blob.size <= TARGET_BYTES) break;
-          if (quality > 0.30) {
-            quality -= 0.03;
-          } else {
-            max = Math.max(420, Math.round(max * 0.82));
-            quality = 0.44;
-          }
-        }
-        resolve(blob);
-      } catch (error) {
-        reject(error);
-      }
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read image.')); };
-    img.src = url;
-  });
 }
