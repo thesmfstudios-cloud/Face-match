@@ -12,47 +12,221 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch customer page
+      - name: Apply payment recovery and download fix
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
-          p = Path('app/page.js')
-          s = p.read_text()
 
-          state = "  const cameraStreamRef = useRef(null);\n"
-          if "const [downloadStarting" not in s:
-              s = s.replace(state, state + "  const [downloadStarting, setDownloadStarting] = useState(false);\n  const [downloadStarted, setDownloadStarted] = useState(false);\n", 1)
+          page = Path('app/page.js')
+          s = page.read_text()
 
-          helper = '''  const downloadApprovedPhotos = async (approvedOrderId) => {
-    if (!approvedOrderId || !selected.length || downloadStarting || downloadStarted) return;
-    setDownloadStarting(true);
-    setMatchMessage('Payment verified. Starting your original downloads…');
+          # State/constants used by the durable payment recovery flow.
+          if 'const RECOVERY_WINDOW_MS = 45 * 60 * 1000;' not in s:
+              s = s.replace(
+                  "const PAID_ORDER_STORAGE_KEY = `fm_paid_order_${EVENT_SLUG}`;\n",
+                  "const PAID_ORDER_STORAGE_KEY = `fm_paid_order_${EVENT_SLUG}`;\nconst RECOVERY_WINDOW_MS = 45 * 60 * 1000;\n",
+                  1,
+              )
+          if 'const [downloadAttempted, setDownloadAttempted]' not in s:
+              s = s.replace(
+                  "  const [downloadStarted, setDownloadStarted] = useState(false);\n",
+                  "  const [downloadStarted, setDownloadStarted] = useState(false);\n  const [downloadAttempted, setDownloadAttempted] = useState(false);\n  const [staleOrder, setStaleOrder] = useState(null);\n  const downloadLockRef = useRef(false);\n",
+                  1,
+              )
+
+          # Replace the old always-restore paid-order effect with a time-bounded
+          # automatic recovery plus a manual recovery path for older orders.
+          recovery = '''  const hydrateApprovedOrder = async (savedOrderId, { silent = false } = {}) => {
+    if (!savedOrderId) return false;
     try {
-      window.location.href = `/api/orders/${approvedOrderId}/download-zip`;
-      setDownloadStarted(true);
-      setMatchMessage(`${selected.length} original photo${selected.length === 1 ? '' : 's'} download started.`);
+      const res = await fetch(`/api/orders/${savedOrderId}/status`, { cache: 'no-store' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body?.order) {
+        if (res.status === 404) removeStoredOrder();
+        return false;
+      }
+
+      const status = body.order.status;
+      if (status === 'rejected') {
+        removeStoredOrder();
+        return false;
+      }
+      if (status !== 'approved' && status !== 'fulfilled') return false;
+
+      const restoredIds = Array.isArray(body.order.selected_photo_ids)
+        ? body.order.selected_photo_ids.map(String)
+        : [];
+
+      setOrderId(body.order.id);
+      setPaymentSent(true);
+      setPaymentLoading(false);
+      setStaleOrder(null);
+      setDownloadStarted(false);
+      setDownloadAttempted(false);
+      if (restoredIds.length) setSelected(restoredIds);
+      if (!silent) {
+        setMatchMessage(
+          restoredIds.length
+            ? `Payment already verified for ${restoredIds.length} photo${restoredIds.length === 1 ? '' : 's'}. Your originals are ready to download.`
+            : 'Payment already verified. Your original photos are ready to download.'
+        );
+      }
+      rememberApprovedOrder(body.order.id, restoredIds);
+      return true;
     } catch (error) {
-      setMatchMessage(error?.message || 'Could not start the photo download.');
+      console.warn('Could not recover paid order:', error);
+      return false;
+    }
+  };
+
+  const removeStoredOrder = () => {
+    if (typeof window === 'undefined') return;
+    try { window.localStorage.removeItem(PAID_ORDER_STORAGE_KEY); } catch {}
+  };
+
+  const recoverStaleOrder = async () => {
+    if (!staleOrder?.orderId) return;
+    await hydrateApprovedOrder(staleOrder.orderId);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const recoverPaidOrder = async () => {
+      if (typeof window === 'undefined') return;
+      try {
+        const raw = window.localStorage.getItem(PAID_ORDER_STORAGE_KEY);
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        if (!saved?.orderId || cancelled) return;
+
+        const savedAt = Number(saved.savedAt || 0);
+        const isRecent = savedAt > 0 && (Date.now() - savedAt) < RECOVERY_WINDOW_MS;
+
+        if (isRecent) {
+          await hydrateApprovedOrder(saved.orderId);
+          return;
+        }
+
+        if (!cancelled) setStaleOrder({ orderId: saved.orderId });
+      } catch (error) {
+        console.warn('Could not recover paid order:', error);
+      }
+    };
+
+    recoverPaidOrder();
+    return () => { cancelled = true; };
+  }, []);
+
+'''
+          pattern = r"  useEffect\(\(\) => \{\n    let cancelled = false;\n\n    const recoverPaidOrder = async \(\) => \{.*?\n  \}, \[\]\);\n\n"
+          if re.search(pattern, s, flags=re.S):
+              s = re.sub(pattern, recovery, s, count=1, flags=re.S)
+          elif 'const hydrateApprovedOrder = async' not in s:
+              raise SystemExit('Could not find the existing paid-order recovery effect')
+
+          # Replace the fragile window.location-based download helper with a
+          # fetch/blob download that can report failure and keep the retry UI.
+          helper = '''  const downloadApprovedPhotos = async (approvedOrderId) => {
+    if (!approvedOrderId || !selected.length || downloadLockRef.current) return;
+    downloadLockRef.current = true;
+    setDownloadStarting(true);
+    setDownloadAttempted(true);
+    setMatchMessage('Preparing your original photo download…');
+
+    try {
+      const response = await fetch(`/api/orders/${approvedOrderId}/download-zip`, {
+        method: 'GET',
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body?.error || 'Could not prepare your photo download.');
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const disposition = response.headers.get('content-disposition') || '';
+      const match = disposition.match(/filename="?([^";]+)"?/i);
+      const filename = match?.[1] || `SMF-Photos-${String(approvedOrderId).slice(0, 8)}.zip`;
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      setDownloadStarted(true);
+      setMatchMessage('Your original photos are downloading.');
+    } catch (error) {
+      setDownloadStarted(false);
+      setMatchMessage(
+        error?.message
+          ? `${error.message} Use “Download Originals” to retry.`
+          : 'Could not start the download. Use “Download Originals” to retry.'
+      );
     } finally {
+      downloadLockRef.current = false;
       setDownloadStarting(false);
     }
   };
 
 '''
-
-          pattern = r"  const downloadApprovedPhotos = async \(approvedOrderId\) => \{.*?\n  \};\n\n  const submitPayment = async \(\) => \{"
+          pattern = r"  const downloadApprovedPhotos = async \(approvedOrderId\) => \{.*?\n  \};\n\n  const rememberApprovedOrder"
           if re.search(pattern, s, flags=re.S):
-              s = re.sub(pattern, helper + "  const submitPayment = async () => {", s, count=1, flags=re.S)
+              s = re.sub(pattern, helper + "  const rememberApprovedOrder", s, count=1, flags=re.S)
           else:
-              s = s.replace("  const submitPayment = async () => {\n", helper + "  const submitPayment = async () => {\n", 1)
+              raise SystemExit('Could not find the existing download helper')
 
-          p.write_text(s)
+          # Persist the approved order immediately after server verification.
+          needle = "            if (approvedId) {\n              await downloadApprovedPhotos(approvedId);\n            }"
+          replacement = "            if (approvedId) {\n              rememberApprovedOrder(approvedId, selected);\n              await downloadApprovedPhotos(approvedId);\n            }"
+          if needle in s:
+              s = s.replace(needle, replacement, 1)
+
+          # The polling effect should re-attempt until an actual download
+          # attempt is made, but not race with another download call.
+          s = s.replace(
+              "if (!orderId || !paymentSent || downloadStarted) return undefined;",
+              "if (!orderId || !paymentSent || downloadAttempted || !selected.length) return undefined;",
+              1,
+          )
+          s = s.replace(
+              "}, [orderId, paymentSent, downloadStarted]);",
+              "}, [orderId, paymentSent, downloadAttempted, selected]);",
+              1,
+          )
+
+          # Replace the existing payment/status notices with an explicit
+          # recovery action and a low-key stale-order action.
+          old_notice = "      {paymentSent && <div className=\"notice successNotice\"><CheckCircle2 size={17}/> Payment verified successfully. Your original downloads are starting now.{orderId && <> Order: <code>{orderId}</code></>}</div>}"
+          new_notice = "      {paymentSent && <div className=\"notice successNotice\"><CheckCircle2 size={17}/> Payment verified successfully. Your original downloads are ready.{orderId && <> Order: <code>{orderId}</code></>}</div>}\n      {paymentSent && orderId && <div className=\"notice downloadRecoveryNotice\"><div><b>Originals ready</b><span>Your payment is already verified. You can retry the download anytime without paying again.</span></div><button type=\"button\" className=\"primaryButton\" onClick={() => downloadApprovedPhotos(orderId)} disabled={downloadStarting}>{downloadStarting ? <><Loader2 size={17} className=\"spin\"/> Preparing…</> : <>{downloadAttempted ? 'Download again' : 'Download Originals'} <ArrowRight size={17}/></>}</button></div>}\n      {!paymentSent && staleOrder && <div className=\"notice staleOrderNotice\"><span>Paid for photos before on this device?</span><button type=\"button\" className=\"linkButton\" onClick={recoverStaleOrder}>Recover my download</button></div>}"
+          if old_notice in s:
+              s = s.replace(old_notice, new_notice, 1)
+          else:
+              raise SystemExit('Could not find payment success notice')
+
+          # Do not keep the checkout bar active after payment recovery.
+          s = s.replace(
+              "{selected.length > 0 && <div className=\"checkoutBar\">",
+              "{selected.length > 0 && !paymentSent && <div className=\"checkoutBar\">",
+              1,
+          )
+
+          page.write_text(s)
+
+          css = Path('app/globals.css')
+          c = css.read_text()
+          styles = '''\n\n.downloadRecoveryNotice{justify-content:space-between;flex-wrap:wrap;gap:14px;padding:16px 18px}\n.downloadRecoveryNotice>div{display:flex;flex-direction:column;gap:2px}\n.downloadRecoveryNotice b{color:#f2eee6;font-size:11px}\n.downloadRecoveryNotice span{color:#9e9890;font-size:10px}\n.downloadRecoveryNotice .primaryButton{white-space:nowrap}\n.staleOrderNotice{justify-content:center;gap:10px}\n.linkButton{background:none;border:0;padding:0;color:#e8c988;font-size:10px;font-weight:700;text-decoration:underline;cursor:pointer}\n.linkButton:hover{color:#f4d99f}\n@media (max-width:640px){.downloadRecoveryNotice{align-items:stretch}.downloadRecoveryNotice .primaryButton{width:100%}}\n'''
+          if '.downloadRecoveryNotice{' not in c:
+              css.write_text(c.rstrip() + styles)
           PY
-      - name: Commit
+      - name: Commit fix
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add app/page.js
-          git diff --cached --quiet || git commit -m "fix: make paid photo download browser-native"
+          git add app/page.js app/globals.css
+          git diff --cached --quiet || git commit -m "fix: make payment download recovery resilient"
           git push
