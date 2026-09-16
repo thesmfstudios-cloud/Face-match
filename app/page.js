@@ -1,21 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRight, Camera, Check, CheckCircle2, ImagePlus, IndianRupee, Lock, Search, ShieldCheck, Sparkles, Upload, X, Loader2, RefreshCw, Video } from 'lucide-react';
+import { ArrowRight, Camera, Check, CheckCircle2, IndianRupee, Lock, Search, ShieldCheck, Sparkles, Upload, X, Loader2, Video } from 'lucide-react';
 import { getSupabaseBrowser } from '../lib/supabase-browser';
 
 const EVENT_SLUG = 'sam-college-2026';
-const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
-const SCAN_BATCH_SIZE = 4;
-
-const DEMO_PHOTOS = [
-  { id: 'demo-1', people_count: 1, price: 5, preview_url: 'https://images.unsplash.com/photo-1511632765486-a01980e01a18?w=1200&q=80' },
-  { id: 'demo-2', people_count: 4, price: 15, preview_url: 'https://images.unsplash.com/photo-1517457373958-b7bdd4587205?w=1200&q=80' },
-  { id: 'demo-3', people_count: 8, price: 15, preview_url: 'https://images.unsplash.com/photo-1519167758481-83f550bb49b3?w=1200&q=80' },
-  { id: 'demo-4', people_count: 2, price: 15, preview_url: 'https://images.unsplash.com/photo-1519741497674-611481863552?w=1200&q=80' },
-  { id: 'demo-5', people_count: 1, price: 5, preview_url: 'https://images.unsplash.com/photo-1531058020387-3be344556be6?w=1200&q=80' },
-  { id: 'demo-6', people_count: 6, price: 15, preview_url: 'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=1200&q=80' },
-];
+const INDEX_RETRY_DELAY = 3000;
+const MAX_INDEX_RETRIES = 30;
 
 export default function Home() {
   const [mode, setMode] = useState('customer');
@@ -37,25 +28,46 @@ export default function Home() {
   const cameraStreamRef = useRef(null);
   const [downloadStarting, setDownloadStarting] = useState(false);
   const [downloadStarted, setDownloadStarted] = useState(false);
-  const [notificationPermission, setNotificationPermission] = useState('default');
 
-  const livePhotos = photos.length ? photos : DEMO_PHOTOS;
-  const total = useMemo(() => selected.reduce((sum, id) => { const p = livePhotos.find((x) => x.id === id); const people = Number(p?.people_count || 1); return sum + (people > 1 ? 15 : 5); }, 0), [selected, livePhotos]);
+  const livePhotos = photos;
+  const total = useMemo(() => selected.reduce((sum, id) => {
+    const p = livePhotos.find((x) => x.id === id);
+    const people = Number(p?.people_count || 1);
+    return sum + (people > 1 ? 15 : 5);
+  }, 0), [selected, livePhotos]);
 
   useEffect(() => {
     let active = true;
     (async () => {
       try {
         const supabase = getSupabaseBrowser();
-        const { data: e, error: ee } = await supabase.from('fm_events').select('id,name,event_date,photos_count,upi_id,status').eq('slug', EVENT_SLUG).eq('status', 'live').single();
+        const { data: e, error: ee } = await supabase
+          .from('fm_events')
+          .select('id,name,event_date,photos_count,upi_id,status')
+          .eq('slug', EVENT_SLUG)
+          .eq('status', 'live')
+          .single();
         if (ee) throw ee;
-        const { data: p, error: pe } = await supabase.from('fm_photos').select('id,preview_path,original_filename,people_count,price,processing_status').eq('event_id', e.id).eq('processing_status', 'ready').order('created_at', { ascending: true });
+
+        const { data: p, error: pe } = await supabase
+          .from('fm_photos')
+          .select('id,preview_path,original_filename,people_count,price,processing_status')
+          .eq('event_id', e.id)
+          .eq('processing_status', 'ready')
+          .order('created_at', { ascending: true });
         if (pe) throw pe;
-        const mapped = (p || []).map((row) => ({ ...row, preview_url: supabase.storage.from('fm-previews').getPublicUrl(row.preview_path).data.publicUrl }));
-        if (active) { setEvent(e); setPhotos(mapped); }
+
+        const mapped = (p || []).map((row) => ({
+          ...row,
+          preview_url: supabase.storage.from('fm-previews').getPublicUrl(row.preview_path).data.publicUrl,
+        }));
+        if (active) {
+          setEvent(e);
+          setPhotos(mapped);
+        }
       } catch (err) {
-        console.warn('Supabase not configured or migration not applied:', err);
-        if (active) setDataError('Demo mode: connect Supabase to use live event photos.');
+        console.warn('Could not load live event:', err);
+        if (active) setDataError('Unable to load the live gallery. Please refresh and try again.');
       }
     })();
     return () => { active = false; };
@@ -73,7 +85,10 @@ export default function Home() {
     setMatchMessage('');
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access is not supported in this browser.');
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
       cameraStreamRef.current = stream;
       setCameraOpen(true);
       requestAnimationFrame(() => {
@@ -96,6 +111,7 @@ export default function Home() {
     canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
     canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
     const ctx = canvas.getContext('2d');
+    if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     canvas.toBlob((blob) => {
       if (!blob) return;
@@ -119,30 +135,19 @@ export default function Home() {
     setSelected([]);
   };
 
-  const requestScanNotification = async () => {
-    if (typeof window === 'undefined' || !('Notification' in window)) return;
-    try {
-      const permission = Notification.permission === 'default' ? await Notification.requestPermission() : Notification.permission;
-      setNotificationPermission(permission);
-    } catch {}
-  };
-
   const notifyScanComplete = (count) => {
     if (typeof window === 'undefined' || !('Notification' in window) || Notification.permission !== 'granted') return;
     try {
       new Notification('SMF Photo Match', {
-        body: count ? `${count} matching photos are ready to view.` : 'Your photo scan is complete. Tap to view your results.',
+        body: count ? `${count} matching photos are ready to view.` : 'Your photo scan is complete.',
         icon: '/favicon.ico',
       });
     } catch {}
   };
 
   const runFaceMatch = async () => {
-    if (!selfie || matching) return;
-    await requestScanNotification();
-    if (!photos.length) {
-      setMatched(true);
-      setMatchMessage('Demo mode is active. Supabase live photos will be matched after connection.');
+    if (!selfie || matching || !photos.length) {
+      if (!photos.length && !dataError) setMatchMessage('The event gallery is still loading. Please try again in a moment.');
       return;
     }
 
@@ -152,23 +157,43 @@ export default function Home() {
     setMatchMessage('Finding your photos with AI…');
 
     try {
-      const form = new FormData();
-      form.append('eventSlug', EVENT_SLUG);
-      form.append('selfie', selfie);
+      let body = null;
 
-      const response = await fetch('/api/face-match', {
-        method: 'POST',
-        body: form,
-        cache: 'no-store',
-      });
+      for (let attempt = 0; attempt <= MAX_INDEX_RETRIES; attempt += 1) {
+        const form = new FormData();
+        form.append('eventSlug', EVENT_SLUG);
+        form.append('selfie', selfie);
 
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok || !body.ok) {
-        throw new Error(body.error || 'Face matching failed.');
+        const response = await fetch('/api/face-match', {
+          method: 'POST',
+          body: form,
+          cache: 'no-store',
+        });
+        body = await response.json().catch(() => ({}));
+
+        if (response.ok && body.ok) break;
+
+        if (response.status === 409 && body.status === 'indexing') {
+          const done = Number(body.indexedPhotos || 0);
+          const totalPhotos = Number(body.totalPhotos || 0);
+          setMatchMessage(totalPhotos
+            ? `Preparing the gallery for AI… ${done}/${totalPhotos} photos ready. This can continue automatically.`
+            : 'Preparing the gallery for AI…');
+          if (attempt >= MAX_INDEX_RETRIES) {
+            throw new Error('The event gallery is still being prepared. Please try the scan again shortly.');
+          }
+          await new Promise((resolve) => setTimeout(resolve, INDEX_RETRY_DELAY));
+          continue;
+        }
+
+        throw new Error(body.error || body.message || 'Face matching failed.');
       }
 
       const matchMap = new Map(
-        (Array.isArray(body.matches) ? body.matches : []).map((match) => [String(match.photoId), Number(match.similarity || 0)])
+        (Array.isArray(body?.matches) ? body.matches : []).map((match) => [
+          String(match.photoId),
+          Number(match.similarity || 0),
+        ])
       );
 
       const results = photos
@@ -205,10 +230,7 @@ export default function Home() {
     setDownloadStarting(true);
     setMatchMessage('Payment verified. Preparing your original photos…');
     try {
-      const response = await fetch(`/api/orders/${approvedOrderId}/download-zip`, {
-        method: 'GET',
-        cache: 'no-store',
-      });
+      const response = await fetch(`/api/orders/${approvedOrderId}/download-zip`, { method: 'GET', cache: 'no-store' });
       if (!response.ok) {
         let message = 'Could not prepare your photo download.';
         try {
@@ -217,7 +239,6 @@ export default function Home() {
         } catch {}
         throw new Error(message);
       }
-
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -227,7 +248,6 @@ export default function Home() {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
-
       setDownloadStarted(true);
       setMatchMessage(`${selected.length} original photo${selected.length === 1 ? '' : 's'} downloaded as one ZIP.`);
     } catch (error) {
@@ -246,8 +266,13 @@ export default function Home() {
       const scriptLoaded = await loadRazorpayScript();
       if (!scriptLoaded || !window.Razorpay) throw new Error('Razorpay checkout could not be loaded.');
       const createRes = await fetch('/api/create-order', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventSlug: EVENT_SLUG, selectedPhotoIds: selected, groupPhotoIds: selected.filter((id) => Number(livePhotos.find((p) => p.id === id)?.people_count || 1) > 1) }),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventSlug: EVENT_SLUG,
+          selectedPhotoIds: selected,
+          groupPhotoIds: selected.filter((id) => Number(livePhotos.find((p) => p.id === id)?.people_count || 1) > 1),
+        }),
       });
       const createBody = await createRes.json();
       if (!createRes.ok) throw new Error(createBody.error || 'Could not create payment order.');
@@ -255,7 +280,8 @@ export default function Home() {
       const options = {
         key: createBody.key_id,
         one_click_checkout: false,
-        amount: createBody.amount, currency: createBody.currency,
+        amount: createBody.amount,
+        currency: createBody.currency,
         name: 'SMF Studios',
         description: `${selected.length} event photo${selected.length === 1 ? '' : 's'}`,
         order_id: createBody.order_id,
@@ -263,9 +289,12 @@ export default function Home() {
           try {
             setMatchMessage('Verifying payment securely…');
             const verifyRes = await fetch('/api/verify-payment', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                eventSlug: EVENT_SLUG, selectedPhotoIds: selected, groupPhotoIds: selected.filter((id) => Number(livePhotos.find((p) => p.id === id)?.people_count || 1) > 1),
+                eventSlug: EVENT_SLUG,
+                selectedPhotoIds: selected,
+                groupPhotoIds: selected.filter((id) => Number(livePhotos.find((p) => p.id === id)?.people_count || 1) > 1),
                 razorpay_payment_id: response.razorpay_payment_id,
                 razorpay_order_id: response.razorpay_order_id,
                 razorpay_signature: response.razorpay_signature,
@@ -284,8 +313,15 @@ export default function Home() {
             setMatchMessage(error?.message || 'Payment verification failed.');
           }
         },
-        modal: { backdropclose: false, ondismiss: () => { setPaymentLoading(false); setMatchMessage('Payment cancelled.'); } },
-        notes: { event: EVENT_SLUG }, theme: { color: '#111111' },
+        modal: {
+          backdropclose: false,
+          ondismiss: () => {
+            setPaymentLoading(false);
+            setMatchMessage('Payment cancelled.');
+          },
+        },
+        notes: { event: EVENT_SLUG },
+        theme: { color: '#111111' },
       };
       const rzp = new window.Razorpay(options);
       rzp.on('payment.failed', (response) => {
@@ -324,9 +360,9 @@ export default function Home() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [orderId, paymentSent, downloadStarted, selected]);
 
-  const displayPhotos = matched && photos.length ? photos.filter((p) => !p.no_match) : livePhotos;
-  const eventName = event?.name || 'SAM College · 14 September 2026';
-  const photoCount = event?.photos_count || photos.length || '1,248';
+  const displayPhotos = matched ? photos.filter((p) => !p.no_match) : [];
+  const eventName = event?.name || 'Event gallery';
+  const photoCount = event?.photos_count || photos.length || 0;
 
   return <main className="shell">
     <header className="topbar">
@@ -335,9 +371,9 @@ export default function Home() {
     </header>
 
     {mode === 'customer' ? <>
-      <section className="hero"><div className="eyebrowPill"><Sparkles size={14}/> AI PHOTO DELIVERY · SAM COLLEGE</div><h1>Find the moments<br/><em>you’re in.</em></h1><p className="heroCopy">Upload one clear selfie. We run face recognition against the event gallery and only show likely matches.</p><div className="eventBar"><div><span className="micro">EVENT</span><strong>{eventName}</strong></div><div className="eventMeta"><b>{photoCount}</b> photos indexed</div></div></section>
+      <section className="hero"><div className="eyebrowPill"><Sparkles size={14}/> AI PHOTO DELIVERY · {eventName.toUpperCase()}</div><h1>Find the moments<br/><em>you’re in.</em></h1><p className="heroCopy">Upload one clear selfie. We run face recognition against the event gallery and only show likely matches.</p><div className="eventBar"><div><span className="micro">EVENT</span><strong>{eventName}</strong></div><div className="eventMeta"><b>{photoCount}</b> photos indexed</div></div></section>
 
-      <section className="finderCard"><div className="finderIcon"><Camera size={28}/></div><div className="finderBody"><div className="finderTitle">Find my photos</div><div className="finderHint">Use a front-facing selfie or camera capture with your face clearly visible.</div><input id="selfie" hidden type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={chooseSelfie}/><div className="finderControls"><label className="uploadButton" htmlFor="selfie">{selfie ? <><CheckCircle2 size={17}/> {selfieName}</> : <><Upload size={17}/> Upload photo</>}</label><button type="button" className="cameraButton" onClick={startCamera}><Video size={17}/> Use camera</button></div></div><button className="primaryButton" disabled={!selfie || matching} onClick={runFaceMatch}>{matching ? <><Loader2 size={17} className="spin"/> Matching…</> : <>Find photos <ArrowRight size={17}/></>}</button></section>
+      <section className="finderCard"><div className="finderIcon"><Camera size={28}/></div><div className="finderBody"><div className="finderTitle">Find my photos</div><div className="finderHint">Use a front-facing selfie or camera capture with your face clearly visible.</div><input id="selfie" hidden type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" onChange={chooseSelfie}/><div className="finderControls"><label className="uploadButton" htmlFor="selfie">{selfie ? <><CheckCircle2 size={17}/> {selfieName}</> : <><Upload size={17}/> Upload photo</>}</label><button type="button" className="cameraButton" onClick={startCamera}><Video size={17}/> Use camera</button></div></div><button className="primaryButton" disabled={!selfie || matching || !photos.length} onClick={runFaceMatch}>{matching ? <><Loader2 size={17} className="spin"/> Matching…</> : <>Find photos <ArrowRight size={17}/></>}</button></section>
 
       {dataError && <div className="notice">{dataError}</div>}
       {matchMessage && <div className={`notice ${matchMessage.includes('found') ? 'successNotice' : ''}`}>{matchMessage}</div>}
@@ -370,9 +406,6 @@ function loadRazorpayScript() {
     document.body.appendChild(script);
   });
 }
-async function loadImage(src, crossOrigin = false) {
-  return new Promise((resolve, reject) => { const img = new Image(); if (crossOrigin) img.crossOrigin = 'anonymous'; img.onload = () => resolve(img); img.onerror = () => reject(new Error('Could not load event preview.')); img.src = src; });
-}
 
 function Feature({ icon, n, title, copy }) { return <div className="feature"><div className="featureTop"><span>{n}</span><div>{icon}</div></div><h3>{title}</h3><p>{copy}</p></div>; }
 
@@ -383,5 +416,3 @@ function CameraModal({ videoRef, onCapture, onClose }) {
 function PaymentModal({ amount, onClose, onSubmit }) {
   return <div className="modalBackdrop"><div className="paymentModal"><button className="closeButton" onClick={onClose}><X size={19}/></button><div className="modalEyebrow"><IndianRupee size={15}/> SECURE CHECKOUT</div><h2>Pay ₹{amount}</h2><p>Continue to Razorpay for UPI, cards and other supported payment methods. Payment is verified securely on our server before originals are unlocked.</p><div className="checkoutPreview"><ShieldCheck size={18}/><div><b>Automatic verification</b><span>No UTR or manual payment proof required.</span></div></div><button className="primaryButton wide" onClick={onSubmit}>Continue to Razorpay <ArrowRight size={17}/></button><div className="modalFoot"><ShieldCheck size={14}/> Full-resolution originals unlock only after successful payment verification.</div></div></div>;
 }
-
-function FeatureAdminRemoved() { return null; }
