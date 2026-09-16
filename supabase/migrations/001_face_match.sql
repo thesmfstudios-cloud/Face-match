@@ -93,3 +93,8 @@ on conflict (key) do nothing;
 insert into public.fm_events(slug, name, event_date, status, upi_id)
 values ('sam-college-2026', 'SAM College · 14 September 2026', '2026-09-14', 'live', '9200010123@ybl')
 on conflict (slug) do update set upi_id = excluded.upi_id;
+
+-- Public read/insert privileges are required in addition to RLS policies.
+grant select on public.fm_events to anon;
+grant select on public.fm_photos to anon;
+grant insert on public.fm_orders to anon;
