@@ -14,21 +14,19 @@ export async function POST(request) {
   try {
     if (!auth(request)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    // Keep the public event lookup on the same project/config used by the customer app.
-    // The service-role client is reserved for creating signed Storage upload URLs.
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!url || !publishableKey || !serviceKey) {
+    if (!url || !serviceKey) {
       return NextResponse.json({ error: 'Server Supabase variables are missing.' }, { status: 500 });
     }
 
-    const publicSupabase = createClient(url, publishableKey, { auth: { persistSession: false } });
-    const storageSupabase = createClient(url, serviceKey, { auth: { persistSession: false } });
+    // Admin routes use the server credential for both database and Storage access.
+    // This avoids mixing anon/public RLS with privileged upload preparation.
+    const supabase = createClient(url, serviceKey, { auth: { persistSession: false } });
     const { eventSlug = 'sam-college-2026', files } = await request.json();
     if (!Array.isArray(files) || !files.length) return NextResponse.json({ error: 'No files requested.' }, { status: 400 });
 
-    const { data: event, error: eventError } = await publicSupabase
+    const { data: event, error: eventError } = await supabase
       .from('fm_events')
       .select('id,slug')
       .eq('slug', eventSlug)
@@ -51,7 +49,7 @@ export async function POST(request) {
 
     const existingHashes = new Set();
     if (hashes.length) {
-      const { data, error } = await storageSupabase
+      const { data, error } = await supabase
         .from('fm_photos')
         .select('file_hash')
         .eq('event_id', event.id)
@@ -60,7 +58,7 @@ export async function POST(request) {
       (data || []).forEach((row) => row.file_hash && existingHashes.add(row.file_hash));
     }
 
-    const { data: existingNames, error: namesError } = await storageSupabase
+    const { data: existingNames, error: namesError } = await supabase
       .from('fm_photos')
       .select('original_filename')
       .eq('event_id', event.id)
@@ -84,9 +82,9 @@ export async function POST(request) {
       const base = `${event.id}/${crypto.randomUUID()}`;
       const originalPath = `${base}-${f.name}`;
       const previewPath = `${base}-preview.jpg`;
-      const original = await storageSupabase.storage.from('fm-originals').createSignedUploadUrl(originalPath);
+      const original = await supabase.storage.from('fm-originals').createSignedUploadUrl(originalPath);
       if (original.error) throw original.error;
-      const preview = await storageSupabase.storage.from('fm-previews').createSignedUploadUrl(previewPath);
+      const preview = await supabase.storage.from('fm-previews').createSignedUploadUrl(previewPath);
       if (preview.error) throw preview.error;
       uploads.push({ index: f.index, name: f.name, fileHash: f.hash || null, originalPath, previewPath, originalToken: original.data.token, previewToken: preview.data.token });
     }
