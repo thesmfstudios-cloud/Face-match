@@ -59,7 +59,7 @@ export default function Home() {
 
         const mapped = (p || []).map((row) => ({
           ...row,
-          preview_url: supabase.storage.from('fm-previews').getPublicUrl(row.preview_path).data.publicUrl,
+          preview_url: `${supabase.storage.from('fm-previews').getPublicUrl(row.preview_path).data.publicUrl}?v=${Date.now()}` ,
         }));
         if (active) {
           setEvent(e);

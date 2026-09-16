@@ -120,7 +120,7 @@ export async function GET(request) {
     const mapped = (photos || []).map((photo) => ({
       ...photo,
       preview_url: photo.preview_path
-        ? supabase.storage.from('fm-previews').getPublicUrl(photo.preview_path).data.publicUrl
+        ? `${supabase.storage.from('fm-previews').getPublicUrl(photo.preview_path).data.publicUrl}?v=${Date.now()}`
         : null,
     }));
 
