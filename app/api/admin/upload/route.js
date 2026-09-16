@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import sharp from 'sharp';
+import { createCustomerPreview } from '../../../../lib/customer-preview';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -34,8 +34,7 @@ export async function POST(request) {
       const originalPath = `${idBase}-${safeName}`;
       const previewPath = `${idBase}-preview.jpg`;
       const bytes = Buffer.from(await file.arrayBuffer());
-      // Downscale for matching/preview only. The original remains in a private bucket.
-      const preview = await sharp(bytes).rotate().resize({ width: 1000, withoutEnlargement: true }).jpeg({ quality: 72, mozjpeg: true }).toBuffer();
+      const preview = await createCustomerPreview(bytes);
 
       const up = await supabase.storage.from('fm-originals').upload(originalPath, bytes, { contentType: file.type || 'image/jpeg', upsert: false });
       if (up.error) throw up.error;
