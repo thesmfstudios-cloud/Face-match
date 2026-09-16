@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 50;
+const CONCURRENCY = 5;
 
 function authorized(request) {
   const expected = process.env.ADMIN_ACCESS_CODE;
@@ -17,11 +18,26 @@ function authorized(request) {
 async function ensureCollection(client, collectionId) {
   try {
     await client.send(new DescribeCollectionCommand({ CollectionId: collectionId }));
-    return;
   } catch (error) {
     if (error?.name !== 'ResourceNotFoundException') throw error;
     await client.send(new CreateCollectionCommand({ CollectionId: collectionId }));
   }
+}
+
+async function mapWithConcurrency(items, worker, concurrency) {
+  const results = new Array(items.length);
+  let cursor = 0;
+
+  async function runner() {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runner));
+  return results;
 }
 
 export async function POST(request) {
@@ -30,7 +46,6 @@ export async function POST(request) {
 
     const body = await request.json().catch(() => ({}));
     const eventSlug = String(body.eventSlug || '');
-    const offset = Math.max(0, Number(body.offset || 0));
     const limit = Math.min(MAX_LIMIT, Math.max(1, Number(body.limit || DEFAULT_LIMIT)));
     if (!eventSlug) return NextResponse.json({ error: 'Event slug is required.' }, { status: 400 });
 
@@ -47,22 +62,39 @@ export async function POST(request) {
       .single();
     if (eventError || !event) return NextResponse.json({ error: 'Event not found.' }, { status: 404 });
 
-    const { data: photos, error: photosError, count } = await supabase
+    const { count: totalReady, error: countError } = await supabase
       .from('fm_photos')
-      .select('id,preview_path,processing_status', { count: 'exact' })
+      .select('id', { count: 'exact', head: true })
+      .eq('event_id', event.id)
+      .eq('processing_status', 'ready');
+    if (countError) throw countError;
+
+    const { count: indexedReady, error: indexedCountError } = await supabase
+      .from('fm_photos')
+      .select('id', { count: 'exact', head: true })
       .eq('event_id', event.id)
       .eq('processing_status', 'ready')
+      .not('ai_indexed_at', 'is', null);
+    if (indexedCountError) throw indexedCountError;
+
+    const { data: photos, error: photosError } = await supabase
+      .from('fm_photos')
+      .select('id,preview_path')
+      .eq('event_id', event.id)
+      .eq('processing_status', 'ready')
+      .is('ai_indexed_at', null)
       .order('created_at', { ascending: true })
-      .range(offset, offset + limit - 1);
-    if (photosError) return NextResponse.json({ error: photosError.message }, { status: 500 });
+      .limit(limit);
+    if (photosError) throw photosError;
 
     const client = getRekognitionClient();
     const collectionId = getCollectionId(eventSlug);
     await ensureCollection(client, collectionId);
 
-    const results = [];
-    for (const photo of photos || []) {
+    const results = await mapWithConcurrency(photos || [], async (photo) => {
       try {
+        if (!photo.preview_path) throw new Error('Preview file is missing.');
+
         const { data: file, error: downloadError } = await supabase.storage
           .from('fm-previews')
           .download(photo.preview_path);
@@ -72,32 +104,58 @@ export async function POST(request) {
         const indexed = await client.send(new IndexFacesCommand({
           CollectionId: collectionId,
           Image: { Bytes: bytes },
-          ExternalImageId: photo.id,
-          QualityFilter: 'AUTO',
+          ExternalImageId: String(photo.id),
+          QualityFilter: 'NONE',
           MaxFaces: 100,
           DetectionAttributes: [],
         }));
 
-        results.push({
-          photoId: photo.id,
-          indexedFaces: indexed.FaceRecords?.length || 0,
-          unindexedFaces: indexed.UnindexedFaces?.length || 0,
-        });
-      } catch (error) {
-        results.push({ photoId: photo.id, error: error?.message || 'Indexing failed.' });
-      }
-    }
+        const indexedFaces = indexed.FaceRecords?.length || 0;
+        const unindexedFaces = indexed.UnindexedFaces?.length || 0;
+        const { error: markError } = await supabase
+          .from('fm_photos')
+          .update({
+            ai_indexed_at: new Date().toISOString(),
+            ai_indexed_faces: indexedFaces,
+            ai_index_error: null,
+            people_count: Math.max(1, indexedFaces),
+          })
+          .eq('id', photo.id);
+        if (markError) throw markError;
 
-    const nextOffset = offset + (photos || []).length;
+        return {
+          photoId: photo.id,
+          indexedFaces,
+          unindexedFaces,
+        };
+      } catch (error) {
+        const message = error?.message || 'Indexing failed.';
+        await supabase
+          .from('fm_photos')
+          .update({ ai_index_error: message })
+          .eq('id', photo.id);
+        return { photoId: photo.id, error: message };
+      }
+    }, CONCURRENCY);
+
+    const successfulPhotos = results.filter((item) => !item.error).length;
+    const indexedFaces = results.reduce((sum, item) => sum + Number(item.indexedFaces || 0), 0);
+    const failed = results.filter((item) => item.error).length;
+    const indexedTotal = Math.min(Number(totalReady || 0), Number(indexedReady || 0) + successfulPhotos);
+    const remaining = Math.max(0, Number(totalReady || 0) - indexedTotal);
+
     return NextResponse.json({
       ok: true,
       eventSlug,
       collectionId,
-      offset,
-      nextOffset,
-      batchSize: (photos || []).length,
-      totalReady: count || 0,
-      done: nextOffset >= (count || 0),
+      batchSize: results.length,
+      indexedPhotos: successfulPhotos,
+      indexedFaces,
+      failedPhotos: failed,
+      totalReady: totalReady || 0,
+      indexedTotal,
+      remaining,
+      done: remaining === 0,
       results,
     });
   } catch (error) {
