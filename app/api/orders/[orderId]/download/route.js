@@ -5,7 +5,8 @@ export const runtime = 'nodejs';
 
 export async function GET(request, { params }) {
   try {
-    const orderId = params?.orderId;
+    const resolvedParams = await params;
+    const orderId = resolvedParams?.orderId;
     const photoId = new URL(request.url).searchParams.get('photoId');
     if (!orderId || !photoId) return NextResponse.json({ error: 'Missing order or photo.' }, { status: 400 });
 
