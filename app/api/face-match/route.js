@@ -2,11 +2,13 @@ import { NextResponse } from 'next/server';
 import { DescribeCollectionCommand, SearchFacesByImageCommand } from '@aws-sdk/client-rekognition';
 import { createClient } from '@supabase/supabase-js';
 import { getCollectionId, getRekognitionClient } from '../../../lib/aws-rekognition';
+import { indexMissingPhotos } from '../../../lib/rekognition-indexer';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const MATCH_THRESHOLD = 75;
+const CUSTOMER_INDEX_BATCH = 10;
 
 async function getEventState(eventSlug) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -66,16 +68,28 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Selfie is too large. Maximum size is 10 MB.' }, { status: 413 });
     }
 
-    const state = await getEventState(eventSlug);
+    let state = await getEventState(eventSlug);
     if (state.totalPhotos > 0 && state.indexedPhotos < state.totalPhotos) {
-      return NextResponse.json({
-        ok: false,
-        status: 'indexing',
-        indexedPhotos: state.indexedPhotos,
-        totalPhotos: state.totalPhotos,
-        remainingPhotos: state.totalPhotos - state.indexedPhotos,
-        message: `Gallery is still being prepared. ${state.indexedPhotos}/${state.totalPhotos} photos are ready for AI search.`,
-      }, { status: 409, headers: { 'Retry-After': '3' } });
+      try {
+        await indexMissingPhotos(eventSlug, {
+          limit: CUSTOMER_INDEX_BATCH,
+          concurrency: 5,
+        });
+        state = await getEventState(eventSlug);
+      } catch (indexError) {
+        console.error('Customer-triggered Rekognition indexing failed:', indexError);
+      }
+
+      if (state.indexedPhotos < state.totalPhotos) {
+        return NextResponse.json({
+          ok: false,
+          status: 'indexing',
+          indexedPhotos: state.indexedPhotos,
+          totalPhotos: state.totalPhotos,
+          remainingPhotos: state.totalPhotos - state.indexedPhotos,
+          message: `Gallery is still being prepared. ${state.indexedPhotos}/${state.totalPhotos} photos are ready for AI search.`,
+        }, { status: 409, headers: { 'Retry-After': '3' } });
+      }
     }
 
     const bytes = Buffer.from(await file.arrayBuffer());
@@ -86,12 +100,24 @@ export async function POST(request) {
       await client.send(new DescribeCollectionCommand({ CollectionId: collectionId }));
     } catch (error) {
       if (error?.name === 'ResourceNotFoundException') {
+        try {
+          const build = await indexMissingPhotos(eventSlug, {
+            limit: CUSTOMER_INDEX_BATCH,
+            concurrency: 5,
+          });
+          state = {
+            totalPhotos: build.totalReady || state.totalPhotos,
+            indexedPhotos: build.indexedTotal || 0,
+          };
+        } catch (indexError) {
+          console.error('Customer-triggered Rekognition collection bootstrap failed:', indexError);
+        }
         return NextResponse.json({
           ok: false,
           status: 'indexing',
-          indexedPhotos: 0,
+          indexedPhotos: state.indexedPhotos,
           totalPhotos: state.totalPhotos,
-          remainingPhotos: state.totalPhotos,
+          remainingPhotos: Math.max(0, state.totalPhotos - state.indexedPhotos),
           message: 'Gallery AI index is starting. Please retry in a few seconds.',
         }, { status: 409, headers: { 'Retry-After': '3' } });
       }
