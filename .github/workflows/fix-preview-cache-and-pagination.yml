@@ -23,9 +23,12 @@ jobs:
           text = p.read_text()
           old = "preview_url: supabase.storage.from('fm-previews').getPublicUrl(row.preview_path).data.publicUrl,"
           new = "preview_url: `${supabase.storage.from('fm-previews').getPublicUrl(row.preview_path).data.publicUrl}?v=${Date.now()}` ,"
-          if old not in text:
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif '?v=${Date.now()}' not in text:
               raise SystemExit('customer preview URL line not found')
-          p.write_text(text.replace(old, new, 1))
+          p.write_text(text)
+          PY
 
       - name: Patch admin library cache busting
         shell: bash
@@ -36,9 +39,11 @@ jobs:
           text = p.read_text()
           old = "preview_url: photo.preview_path\n        ? supabase.storage.from('fm-previews').getPublicUrl(photo.preview_path).data.publicUrl\n        : null,"
           new = "preview_url: photo.preview_path\n        ? `${supabase.storage.from('fm-previews').getPublicUrl(photo.preview_path).data.publicUrl}?v=${Date.now()}`\n        : null,"
-          if old not in text:
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif '?v=${Date.now()}' not in text:
               raise SystemExit('admin preview URL block not found')
-          p.write_text(text.replace(old, new, 1))
+          p.write_text(text)
           PY
 
       - name: Patch regeneration pagination
@@ -46,19 +51,32 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
           p = Path('app/api/admin/regenerate-previews/route.js')
           text = p.read_text()
-          text = text.replace("    const limit = Math.min(100, Math.max(1, Number(body.limit) || 25));\n", "    const limit = Math.min(50, Math.max(1, Number(body.limit) || 10));\n    const offset = Math.max(0, Number(body.offset) || 0);\n")
-          old = ".limit(limit);"
-          new = ".range(offset, offset + limit - 1);"
-          if old not in text:
-              raise SystemExit('regeneration limit clause not found')
-          text = text.replace(old, new, 1)
-          old_tail = "    const { count: totalReady } = await supabase.from('fm_photos').select('id', { count: 'exact', head: true }).eq('event_id', event.id).eq('processing_status', 'ready');\n    const { count: remainingBefore } = await supabase.from('fm_photos').select('id', { count: 'exact', head: true }).eq('event_id', event.id).eq('processing_status', 'ready');\n\n    return NextResponse.json({\n      ok: true,\n      eventSlug,\n      requested: limit,\n      processed,\n      errors,\n      totalReady: totalReady || 0,\n      note: 'Call this endpoint repeatedly to rewrite the existing public previews. Existing AI indexes are unaffected because Rekognition now indexes private originals.',\n      remaining: Math.max(0, Number((totalReady || 0) - processed)),\n      remainingBefore,\n    });"
-          new_tail = "    const { count: totalReady } = await supabase.from('fm_photos').select('id', { count: 'exact', head: true }).eq('event_id', event.id).eq('processing_status', 'ready');\n    const total = Number(totalReady || 0);\n    const nextOffset = Math.min(total, offset + processed);\n\n    return NextResponse.json({\n      ok: true,\n      eventSlug,\n      requested: limit,\n      offset,\n      processed,\n      errors,\n      totalReady: total,\n      nextOffset,\n      done: nextOffset >= total,\n      note: 'Existing previews are rewritten from private originals. Existing AI indexes are unaffected.',\n      remaining: Math.max(0, total - nextOffset),\n    });"
-          if old_tail not in text:
-              raise SystemExit('regeneration response block not found')
-          p.write_text(text.replace(old_tail, new_tail, 1))
+          if 'const offset = Math.max(0, Number(body.offset) || 0);' not in text:
+              text, count = re.subn(
+                  r"(\s+)const limit = Math\.min\(\d+, Math\.max\(1, Number\(body\.limit\) \|\| \d+\)\);",
+                  r"\1const limit = Math.min(50, Math.max(1, Number(body.limit) || 10));\n\1const offset = Math.max(0, Number(body.offset) || 0);",
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit('regeneration limit line not found')
+          text = text.replace('.limit(limit);', '.range(offset, offset + limit - 1);', 1)
+          if 'nextOffset' not in text:
+              marker = "    const { count: totalReady } = await supabase.from('fm_photos').select('id', { count: 'exact', head: true }).eq('event_id', event.id).eq('processing_status', 'ready');"
+              if marker not in text:
+                  raise SystemExit('totalReady marker not found')
+              text = text.replace(
+                  marker,
+                  marker + "\n    const total = Number(totalReady || 0);\n    const nextOffset = Math.min(total, offset + processed);",
+                  1,
+              )
+              old_return = "    return NextResponse.json({\n      ok: true,\n      eventSlug,\n      requested: limit,\n      processed,\n      errors,\n      totalReady: totalReady || 0,"
+              new_return = "    return NextResponse.json({\n      ok: true,\n      eventSlug,\n      requested: limit,\n      offset,\n      processed,\n      errors,\n      totalReady: total,\n      nextOffset,\n      done: nextOffset >= total,"
+              text = text.replace(old_return, new_return, 1)
+          p.write_text(text)
           PY
 
       - name: Commit and push
