@@ -9,7 +9,7 @@ const MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 
 function safeFilename(name, fallback) {
   const clean = String(name || fallback)
-    .replace(/[\\\\/:*?"<>|\r\n]+/g, '_')
+    .replace(/[\\/:*?"<>|\r\n]+/g, '_')
     .replace(/^\.+/, '')
     .trim();
   return clean || fallback;
