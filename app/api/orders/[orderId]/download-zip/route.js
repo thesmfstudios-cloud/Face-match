@@ -30,7 +30,8 @@ function uniqueName(name, used) {
 
 export async function GET(request, { params }) {
   try {
-    const orderId = params?.orderId;
+    const resolvedParams = await params;
+    const orderId = resolvedParams?.orderId;
     if (!orderId) return NextResponse.json({ error: 'Missing order.' }, { status: 400 });
 
     const supabase = createClient(
