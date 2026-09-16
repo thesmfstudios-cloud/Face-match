@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { indexMissingPhotos } from '../../../../lib/rekognition-indexer';
+import { createCustomerPreview } from '../../../../lib/customer-preview';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,7 +24,25 @@ export async function POST(request) {
     const { data: event, error: eventError } = await supabase.from('fm_events').select('id').eq('slug', eventSlug).single();
     if (eventError || !event) return NextResponse.json({ error: 'Event not found.' }, { status: 400 });
 
-    const rows = uploads.map((u) => ({
+    // Replace the client-generated public preview with a server-generated,
+    // permanently blurred and size-capped customer preview. The Rekognition
+    // indexer reads originals privately, so blur never reduces AI match quality.
+    const preparedUploads = [];
+    for (const upload of uploads) {
+      if (!upload?.originalPath || !upload?.previewPath) throw new Error('Upload paths are missing.');
+      const { data: original, error: originalError } = await supabase.storage.from('fm-originals').download(upload.originalPath);
+      if (originalError || !original) throw new Error(originalError?.message || 'Could not read uploaded original.');
+      const blurredPreview = await createCustomerPreview(Buffer.from(await original.arrayBuffer()));
+      const { error: previewError } = await supabase.storage.from('fm-previews').upload(upload.previewPath, blurredPreview, {
+        contentType: 'image/jpeg',
+        upsert: true,
+        cacheControl: '31536000',
+      });
+      if (previewError) throw previewError;
+      preparedUploads.push(upload);
+    }
+
+    const rows = preparedUploads.map((u) => ({
       event_id: event.id,
       original_path: u.originalPath,
       preview_path: u.previewPath,
