@@ -6,6 +6,8 @@ import { getCollectionId, getRekognitionClient } from '../../../lib/aws-rekognit
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+const MATCH_THRESHOLD = 75;
+
 async function ensureCollection(client, collectionId) {
   try {
     await client.send(new DescribeCollectionCommand({ CollectionId: collectionId }));
@@ -64,7 +66,7 @@ async function search(client, collectionId, bytes) {
   return client.send(new SearchFacesByImageCommand({
     CollectionId: collectionId,
     Image: { Bytes: bytes },
-    FaceMatchThreshold: 85,
+    FaceMatchThreshold: MATCH_THRESHOLD,
     MaxFaces: 200,
     QualityFilter: 'AUTO',
   }));
@@ -102,6 +104,15 @@ export async function POST(request) {
       response = await search(client, collectionId, bytes);
     }
 
+    // If the collection exists but was never populated (or contains a stale/empty
+    // index), rebuild once and retry. This makes newly uploaded event galleries
+    // searchable without requiring a manual AI-index step.
+    if (!(response.FaceMatches || []).length) {
+      const indexResult = await buildIndexIfMissing(client, collectionId, eventSlug);
+      console.log('Rebuilt Rekognition index after zero matches:', { eventSlug, ...indexResult });
+      response = await search(client, collectionId, bytes);
+    }
+
     const matches = (response.FaceMatches || [])
       .map((match) => ({
         photoId: match.Face?.ExternalImageId || null,
@@ -110,7 +121,7 @@ export async function POST(request) {
       .filter((match) => match.photoId)
       .sort((a, b) => b.similarity - a.similarity);
 
-    return NextResponse.json({ ok: true, matches });
+    return NextResponse.json({ ok: true, matches, threshold: MATCH_THRESHOLD });
   } catch (error) {
     console.error('Rekognition face match failed:', error);
     const name = error?.name || '';
