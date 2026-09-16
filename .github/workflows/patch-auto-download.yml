@@ -16,20 +16,37 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
           p = Path('app/page.js')
           s = p.read_text()
+
           state = "  const cameraStreamRef = useRef(null);\n"
           if "const [downloadStarting" not in s:
               s = s.replace(state, state + "  const [downloadStarting, setDownloadStarting] = useState(false);\n  const [downloadStarted, setDownloadStarted] = useState(false);\n", 1)
-          helper_anchor = "  const submitPayment = async () => {\n"
-          helper = '''  const downloadApprovedPhotos = async (approvedOrderId) => {\n    if (!approvedOrderId || !selected.length || downloadStarting || downloadStarted) return;\n    setDownloadStarting(true);\n    setMatchMessage('Payment approved. Starting your original downloads…');\n    try {\n      for (let i = 0; i < selected.length; i++) {\n        const a = document.createElement('a');\n        a.href = `/api/orders/${approvedOrderId}/download?photoId=${encodeURIComponent(selected[i])}`;\n        a.target = '_blank';\n        a.rel = 'noopener';\n        document.body.appendChild(a);\n        a.click();\n        a.remove();\n        if (i < selected.length - 1) await new Promise((r) => setTimeout(r, 900));\n      }\n      setDownloadStarted(true);\n      setMatchMessage(`${selected.length} original download${selected.length === 1 ? '' : 's'} started.`);\n    } finally {\n      setDownloadStarting(false);\n    }\n  };\n\n'''
-          if 'const downloadApprovedPhotos = async' not in s:
-              s = s.replace(helper_anchor, helper + helper_anchor, 1)
-          poll_anchor = "  const displayPhotos = matched && photos.length ? photos.filter((p) => !p.no_match) : livePhotos;\n"
-          poll = '''  useEffect(() => {\n    if (!orderId || !paymentSent || downloadStarted) return undefined;\n    let cancelled = false;\n    let timer;\n    const check = async () => {\n      try {\n        const res = await fetch(`/api/orders/${orderId}/status`, { cache: 'no-store' });\n        const body = await res.json();\n        const status = body.order?.status;\n        if (cancelled) return;\n        if (status === 'approved' || status === 'fulfilled') {\n          await downloadApprovedPhotos(orderId);\n          return;\n        }\n        if (status === 'rejected') {\n          setMatchMessage('Payment was not approved. Please contact the event photographer.');\n          return;\n        }\n      } catch {}\n      if (!cancelled) timer = setTimeout(check, 5000);\n    };\n    check();\n    return () => { cancelled = true; clearTimeout(timer); };\n  }, [orderId, paymentSent, downloadStarted, selected]);\n\n'''
-          if 'fetch(`/api/orders/${orderId}/status`' not in s:
-              s = s.replace(poll_anchor, poll + poll_anchor, 1)
-          s = s.replace('Payment submitted. UTR recorded; admin verification is required.', 'Payment submitted. UTR recorded. Originals will start downloading automatically after admin approval.', 1)
+
+          helper = '''  const downloadApprovedPhotos = async (approvedOrderId) => {
+    if (!approvedOrderId || !selected.length || downloadStarting || downloadStarted) return;
+    setDownloadStarting(true);
+    setMatchMessage('Payment verified. Starting your original downloads…');
+    try {
+      window.location.href = `/api/orders/${approvedOrderId}/download-zip`;
+      setDownloadStarted(true);
+      setMatchMessage(`${selected.length} original photo${selected.length === 1 ? '' : 's'} download started.`);
+    } catch (error) {
+      setMatchMessage(error?.message || 'Could not start the photo download.');
+    } finally {
+      setDownloadStarting(false);
+    }
+  };
+
+'''
+
+          pattern = r"  const downloadApprovedPhotos = async \(approvedOrderId\) => \{.*?\n  \};\n\n  const submitPayment = async \(\) => \{"
+          if re.search(pattern, s, flags=re.S):
+              s = re.sub(pattern, helper + "  const submitPayment = async () => {", s, count=1, flags=re.S)
+          else:
+              s = s.replace("  const submitPayment = async () => {\n", helper + "  const submitPayment = async () => {\n", 1)
+
           p.write_text(s)
           PY
       - name: Commit
@@ -37,5 +54,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/page.js
-          git diff --cached --quiet || git commit -m "Auto-download originals after payment approval"
+          git diff --cached --quiet || git commit -m "fix: make paid photo download browser-native"
           git push
