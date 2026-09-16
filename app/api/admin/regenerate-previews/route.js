@@ -21,10 +21,18 @@ export async function POST(request) {
     const supabase = createClient(url, serviceKey, { auth: { persistSession: false } });
     const body = await request.json().catch(() => ({}));
     const eventSlug = String(body.eventSlug || 'sam-college-2026');
-    const limit = Math.min(100, Math.max(1, Number(body.limit) || 25));
+    const limit = Math.min(25, Math.max(1, Number(body.limit) || 10));
+    const offset = Math.max(0, Number(body.offset) || 0);
 
     const { data: event, error: eventError } = await supabase.from('fm_events').select('id').eq('slug', eventSlug).single();
     if (eventError || !event) return NextResponse.json({ error: 'Event not found.' }, { status: 400 });
+
+    const { count: totalReady, error: countError } = await supabase
+      .from('fm_photos')
+      .select('id', { count: 'exact', head: true })
+      .eq('event_id', event.id)
+      .eq('processing_status', 'ready');
+    if (countError) throw countError;
 
     const { data: photos, error: photoError } = await supabase
       .from('fm_photos')
@@ -32,7 +40,7 @@ export async function POST(request) {
       .eq('event_id', event.id)
       .eq('processing_status', 'ready')
       .order('created_at', { ascending: true })
-      .limit(limit);
+      .range(offset, offset + limit - 1);
     if (photoError) throw photoError;
 
     let processed = 0;
@@ -55,19 +63,18 @@ export async function POST(request) {
       }
     }
 
-    const { count: totalReady } = await supabase.from('fm_photos').select('id', { count: 'exact', head: true }).eq('event_id', event.id).eq('processing_status', 'ready');
-    const { count: remainingBefore } = await supabase.from('fm_photos').select('id', { count: 'exact', head: true }).eq('event_id', event.id).eq('processing_status', 'ready');
-
+    const nextOffset = offset + (photos?.length || 0);
     return NextResponse.json({
       ok: true,
       eventSlug,
       requested: limit,
+      offset,
       processed,
       errors,
       totalReady: totalReady || 0,
-      note: 'Call this endpoint repeatedly to rewrite the existing public previews. Existing AI indexes are unaffected because Rekognition now indexes private originals.',
-      remaining: Math.max(0, Number((totalReady || 0) - processed)),
-      remainingBefore,
+      nextOffset,
+      done: nextOffset >= Number(totalReady || 0),
+      note: 'Use nextOffset to continue. Existing AI indexes are unaffected because Rekognition indexes private originals.',
     });
   } catch (error) {
     console.error(error);
