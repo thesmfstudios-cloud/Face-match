@@ -1,4 +1,4 @@
-name: Apply customer preview settings
+name: Apply customer preview cache bust
 
 on:
   push:
@@ -13,71 +13,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch browser preview generator
+      - name: Patch customer preview URL
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
-
-          p = Path('app/admin/page.js')
+          p = Path('app/page.js')
           text = p.read_text()
-          replacement = r'''function makePreview(file) {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = async () => {
-      URL.revokeObjectURL(url);
-      const TARGET_BYTES = 5 * 1024;
-      let max = 700;
-      let quality = 0.42;
-      let blob = null;
-      try {
-        for (let attempt = 0; attempt < 24; attempt++) {
-          const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
-          canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
-          const ctx = canvas.getContext('2d', { alpha: false });
-          ctx.imageSmoothingEnabled = true;
-          ctx.filter = 'blur(10px)';
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          ctx.filter = 'none';
-
-          const fontSize = Math.max(16, Math.round(Math.min(canvas.width, canvas.height) * 0.075));
-          ctx.font = `700 ${fontSize}px Arial, Helvetica, sans-serif`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillStyle = 'rgba(255,255,255,0.78)';
-          ctx.fillText('SMF PHOTO MATCH', canvas.width / 2, canvas.height / 2);
-
-          blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', quality));
-          if (!blob) throw new Error('Could not create preview.');
-          if (blob.size <= TARGET_BYTES) break;
-          if (quality > 0.20) quality -= 0.02;
-          else {
-            max = Math.max(220, Math.round(max * 0.78));
-            quality = 0.36;
-          }
-        }
-        resolve(blob);
-      } catch (error) {
-        reject(error);
-      }
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read image.')); };
-    img.src = url;
-  });
-}'''
-
-          new_text, count = re.subn(r"function makePreview\(file\) \{.*\Z", replacement + "\n", text, count=1, flags=re.S)
-          if count != 1:
-            raise SystemExit('makePreview function not found')
-          p.write_text(new_text)
+          old = "preview_url: supabase.storage.from('fm-previews').getPublicUrl(row.preview_path).data.publicUrl,"
+          new = "preview_url: `${supabase.storage.from('fm-previews').getPublicUrl(row.preview_path).data.publicUrl}?v=${Date.now()}`,"
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif "?v=${Date.now()}" not in text:
+              raise SystemExit('customer preview URL line not found')
+          p.write_text(text)
           PY
-
+      - name: Commit and push
+        shell: bash
+        run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add app/admin/page.js
-          git commit -m 'feat: use 5kb blurred centered-watermark previews'
+          git add app/page.js
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix: bust cached customer preview URLs'
           git push
