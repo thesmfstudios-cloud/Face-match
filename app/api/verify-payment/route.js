@@ -39,11 +39,6 @@ export async function POST(request) {
     const photoIds = Array.isArray(body.selectedPhotoIds)
       ? [...new Set(body.selectedPhotoIds.filter(Boolean).map(String))]
       : [];
-    const groupPhotoIds = new Set(
-      Array.isArray(body.groupPhotoIds)
-        ? body.groupPhotoIds.filter(Boolean).map(String)
-        : []
-    );
 
     if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature || !eventSlug || !photoIds.length) {
       return NextResponse.json({ error: 'Missing payment verification fields.' }, { status: 400 });
@@ -71,7 +66,7 @@ export async function POST(request) {
 
     const { data: photos, error: photoError } = await supabase
       .from('fm_photos')
-      .select('id,processing_status')
+      .select('id,processing_status,people_count')
       .eq('event_id', event.id)
       .in('id', photoIds);
 
@@ -80,7 +75,8 @@ export async function POST(request) {
       return NextResponse.json({ error: 'One or more selected photos are unavailable.' }, { status: 400 });
     }
 
-    const total = photos.reduce((sum, photo) => sum + (groupPhotoIds.has(String(photo.id)) ? 15 : 5), 0);
+    // Server-side source of truth: a photo with more than one detected person is ₹15.
+    const total = photos.reduce((sum, photo) => sum + (Number(photo.people_count || 1) > 1 ? 15 : 5), 0);
     const expectedAmount = Math.round(total * 100);
     const order = await razorpay.orders.fetch(razorpay_order_id);
 
