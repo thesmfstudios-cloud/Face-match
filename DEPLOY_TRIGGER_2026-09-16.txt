@@ -1,0 +1,2 @@
+Deployment trigger for the paid-download recovery fix.
+The application changes are already in the main branch.
